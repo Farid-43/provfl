@@ -1,0 +1,51 @@
+{
+    "adult": {
+        "learning_rate": 0.01,
+        "input_dim": 111,
+        "a_dim": 61,
+        "b_dim": 50,
+        "hidden_dim": 16,
+        "epochs": 20,
+        "class_num": 2
+    },
+
+    "census": {
+        "learning_rate": 0.005,
+        "input_dim": 511,
+        "a_dim": 256,
+        "b_dim": 255,
+        "hidden_dim": 16,
+        "epochs": 30,
+        "class_num": 2
+    },
+
+    "bankmk": {
+        "learning_rate": 0.05,
+        "input_dim": 51,
+        "a_dim": 26,
+        "b_dim": 25,
+        "hidden_dim": 16,
+        "epochs": 30,
+        "class_num": 2
+    },
+
+    "lawschool": {
+        "learning_rate": 0.05,
+        "input_dim": 39,
+        "a_dim": 19,
+        "b_dim": 20,
+        "hidden_dim": 16,
+        "epochs": 30,
+        "class_num": 2
+    },
+
+    "health": {
+        "learning_rate": 0.01,
+        "input_dim": 110,
+        "a_dim": 60,
+        "b_dim": 50,
+        "hidden_dim": 16,
+        "epochs": 30,
+        "class_num": 2
+    }
+}
