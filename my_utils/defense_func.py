@@ -147,3 +147,96 @@ class DPLaplacianNoiseApplyer():
         # print("noisy_tensor:", noisy_mask)
         tensor = tensor + noisy_mask
         return tensor
+
+
+# ======================== New Defense Mechanisms ========================
+
+def gradient_clipping(tensor, max_norm):
+    """
+    Per-sample gradient clipping (L2 norm).
+    Clips each row (sample) of the gradient tensor so that its L2 norm <= max_norm.
+    This bounds the sensitivity of individual samples, limiting information leakage
+    through gradient magnitudes that the ProVFL attack exploits via L1-norm distributions.
+
+    :param tensor: Gradient tensor of shape (batch_size, hidden_dim)
+    :param max_norm: Maximum allowed L2 norm per sample
+    :return: Clipped gradient tensor
+    """
+    norms = torch.norm(tensor, p=2, dim=1, keepdim=True)
+    clip_factor = torch.clamp(max_norm / (norms + 1e-8), max=1.0)
+    return tensor * clip_factor
+
+
+def add_gaussian_noise(tensor, sigma):
+    """
+    Add isotropic Gaussian noise N(0, sigma^2) to each element of the gradient tensor.
+    This obscures the gradient distribution that ProVFL relies on for property inference.
+
+    :param tensor: Gradient tensor of shape (batch_size, hidden_dim)
+    :param sigma: Standard deviation of Gaussian noise
+    :return: Noisy gradient tensor
+    """
+    noise = torch.randn_like(tensor) * sigma
+    return tensor + noise
+
+
+def dp_gaussian_mechanism(tensor, max_norm, noise_multiplier):
+    """
+    Differentially Private Gaussian Mechanism (DP-SGD style, Abadi et al. 2016).
+    Step 1: Per-sample gradient clipping to bound sensitivity to max_norm.
+    Step 2: Add calibrated Gaussian noise with std = noise_multiplier * max_norm.
+    Together these provide (epsilon, delta)-differential privacy guarantees.
+
+    :param tensor: Gradient tensor of shape (batch_size, hidden_dim)
+    :param max_norm: Clipping bound C for per-sample gradients
+    :param noise_multiplier: Noise multiplier sigma; actual noise std = sigma * C
+    :return: DP-protected gradient tensor
+    """
+    # Step 1: Per-sample gradient clipping
+    clipped = gradient_clipping(tensor, max_norm)
+    # Step 2: Add calibrated Gaussian noise
+    noise_std = noise_multiplier * max_norm
+    noise = torch.randn_like(clipped) * noise_std
+    return clipped + noise
+
+
+def gradient_sparsification(tensor, keep_ratio):
+    """
+    Gradient sparsification: retain only the top-k% of gradient coordinates by magnitude
+    per sample, zeroing out the rest. This reduces the information content of communicated
+    gradients and disrupts the sorted L1-norm distributions that ProVFL exploits.
+
+    :param tensor: Gradient tensor of shape (batch_size, hidden_dim)
+    :param keep_ratio: Fraction of coordinates to keep (0.0 to 1.0)
+    :return: Sparsified gradient tensor
+    """
+    k = max(1, int(tensor.size(1) * keep_ratio))
+    _, top_indices = torch.topk(torch.abs(tensor), k, dim=1)
+    mask = torch.zeros_like(tensor)
+    mask.scatter_(1, top_indices, 1.0)
+    return tensor * mask
+
+
+def gradient_random_projection(tensor, proj_dim):
+    """
+    Random Projection defense.
+    Projects the gradient into a lower dimensional random subspace and then reconstructs it
+    to the original dimension. This acts as privacy-preserving compression.
+
+    :param tensor: Gradient tensor of shape (batch_size, hidden_dim)
+    :param proj_dim: The dimension of the random subspace (int)
+    :return: Obfuscated gradient tensor
+    """
+    hidden_dim = tensor.size(1)
+    proj_dim = int(proj_dim)
+    if proj_dim >= hidden_dim or proj_dim <= 0:
+        return tensor
+
+    # Generate a random Gaussian matrix
+    R = torch.randn(hidden_dim, proj_dim, device=tensor.device) / (proj_dim ** 0.5)
+    
+    # Project to lower dimension and reconstruct
+    projected = torch.matmul(tensor, R)
+    reconstructed = torch.matmul(projected, R.t())
+    
+    return reconstructed
