@@ -19,7 +19,7 @@ from sklearn.metrics import roc_auc_score, precision_score, recall_score
 
 from dataloader import get_data
 from models import model_sets
-from my_utils import utils
+from my_utils import utils, defense_func
 from my_utils.pia_func import *
 
 
@@ -164,6 +164,23 @@ def main(args):
             z_down_clone = z_down.detach().clone()
             z_down_clone = torch.autograd.Variable(z_down_clone, requires_grad=True).to(args.device)
 
+            # ===== Apply defense to OUTPUT embeddings BEFORE top model =====
+            # random_proj is skipped here — it changes dimensionality.
+            output_pair = [z_up_clone, z_down_clone]
+            if args.defense == 'grad_clip':
+                for i in range(2):
+                    output_pair[i] = defense_func.gradient_clipping(output_pair[i], max_norm=args.d_para)
+            if args.defense == 'gauss_noise':
+                for i in range(2):
+                    output_pair[i] = defense_func.add_gaussian_noise(output_pair[i], sigma=args.d_para)
+            if args.defense == 'dp_gauss':
+                for i in range(2):
+                    output_pair[i] = defense_func.dp_gaussian_mechanism(output_pair[i], max_norm=args.d_para, noise_multiplier=args.d_para2)
+            if args.defense == 'grad_sparse':
+                for i in range(2):
+                    output_pair[i] = defense_func.gradient_sparsification(output_pair[i], keep_ratio=args.d_para)
+            z_up_clone, z_down_clone = output_pair
+
             # active party backward
             logits = active_model(z_up_clone, z_down_clone)
             logits = torch.squeeze(logits, 1)
@@ -180,21 +197,43 @@ def main(args):
             z_gradients_up_clone = z_gradients_up[0].detach().clone()
             z_gradients_down_clone = z_gradients_down[0].detach().clone()
 
-            # print(123, z_up_clone.shape, z_down_clone.shape, z_gradients_up_clone.shape, z_gradients_down_clone.shape)
-            # 123 torch.Size([64, 16]) torch.Size([64, 16]) torch.Size([64, 16]) torch.Size([64, 16])
+            # ===== Apply defense to GRADIENTS =====
+            model_all_layers_grads_list = [z_gradients_up_clone, z_gradients_down_clone]
+            if args.defense == 'grad_clip':
+                for tensor_id in range(len(model_all_layers_grads_list)):
+                    model_all_layers_grads_list[tensor_id] = defense_func.gradient_clipping(
+                        model_all_layers_grads_list[tensor_id], max_norm=args.d_para)
+            if args.defense == 'gauss_noise':
+                for tensor_id in range(len(model_all_layers_grads_list)):
+                    model_all_layers_grads_list[tensor_id] = defense_func.add_gaussian_noise(
+                        model_all_layers_grads_list[tensor_id], sigma=args.d_para)
+            if args.defense == 'dp_gauss':
+                for tensor_id in range(len(model_all_layers_grads_list)):
+                    model_all_layers_grads_list[tensor_id] = defense_func.dp_gaussian_mechanism(
+                        model_all_layers_grads_list[tensor_id], max_norm=args.d_para, noise_multiplier=args.d_para2)
+            if args.defense == 'grad_sparse':
+                for tensor_id in range(len(model_all_layers_grads_list)):
+                    model_all_layers_grads_list[tensor_id] = defense_func.gradient_sparsification(
+                        model_all_layers_grads_list[tensor_id], keep_ratio=args.d_para)
+            if args.defense == 'random_proj':
+                for tensor_id in range(len(model_all_layers_grads_list)):
+                    model_all_layers_grads_list[tensor_id] = defense_func.gradient_random_projection(
+                        model_all_layers_grads_list[tensor_id], proj_dim=args.d_para)
+            z_gradients_up_clone, z_gradients_down_clone = model_all_layers_grads_list
 
+            # Collect DEFENDED intermediate results for attack evaluation
             if batch_idx == 0:
-                a_output = z_up.detach().clone()
-                a_gradient = z_gradients_up[0].detach().clone()
-                b_output = z_down.detach().clone()
-                b_gradient = z_gradients_down[0].detach().clone()
+                a_output = z_up_clone.detach().clone()
+                a_gradient = z_gradients_up_clone.detach().clone()
+                b_output = z_down_clone.detach().clone()
+                b_gradient = z_gradients_down_clone.detach().clone()
                 target_prop = prop_label
 
             else:
-                a_output = torch.cat((a_output, z_up.detach().clone()), axis=0)
-                a_gradient = torch.cat((a_gradient, z_gradients_up[0].detach().clone()), axis=0)
-                b_output = torch.cat((b_output, z_down.detach().clone()), axis=0)
-                b_gradient = torch.cat((b_gradient, z_gradients_down[0].detach().clone()), axis=0)
+                a_output = torch.cat((a_output, z_up_clone.detach().clone()), axis=0)
+                a_gradient = torch.cat((a_gradient, z_gradients_up_clone.detach().clone()), axis=0)
+                b_output = torch.cat((b_output, z_down_clone.detach().clone()), axis=0)
+                b_gradient = torch.cat((b_gradient, z_gradients_down_clone.detach().clone()), axis=0)
                 target_prop = torch.cat((target_prop, prop_label), axis=0)
 
             # update active model
@@ -370,6 +409,13 @@ if __name__ == '__main__':
     parser.add_argument('--use_MR', type=int, default=0) # fine-tuning 
     parser.add_argument('--act_weight', type=float, default=1.0)
     parser.add_argument('--use_LR', type=int, default=0) # label replace
+    # defense
+    parser.add_argument('--defense', type=str, default='None',
+                        help='Defense type: grad_clip|gauss_noise|dp_gauss|grad_sparse|random_proj') 
+    parser.add_argument('--d_para', type=float, default=0.0,
+                        help='Primary defense parameter') 
+    parser.add_argument('--d_para2', type=float, default=1.0,
+                        help='Secondary defense param (noise_multiplier for dp_gauss)')
     
     args = parser.parse_args()
     for seed in range(10):
