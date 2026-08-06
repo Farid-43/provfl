@@ -193,19 +193,21 @@ def main(args):
             # This defends the output channel that the attacker observes.
             # random_proj is skipped here — it changes dimensionality and
             # would break TrainableTopModel's expected input width.
+            # out_d_para allows independent tuning of output-channel defense strength.
+            out_d_para = args.d_para if args.out_para < 0 else args.out_para
             output_pair = [z_up_clone, z_down_clone]
             if args.defense == 'grad_clip':
                 for i in range(2):
-                    output_pair[i] = defense_func.gradient_clipping(output_pair[i], max_norm=args.d_para)
+                    output_pair[i] = defense_func.gradient_clipping(output_pair[i], max_norm=out_d_para)
             if args.defense == 'gauss_noise':
                 for i in range(2):
-                    output_pair[i] = defense_func.add_gaussian_noise(output_pair[i], sigma=args.d_para)
+                    output_pair[i] = defense_func.add_gaussian_noise(output_pair[i], sigma=out_d_para)
             if args.defense == 'dp_gauss':
                 for i in range(2):
-                    output_pair[i] = defense_func.dp_gaussian_mechanism(output_pair[i], max_norm=args.d_para, noise_multiplier=args.d_para2)
+                    output_pair[i] = defense_func.dp_gaussian_mechanism(output_pair[i], max_norm=out_d_para, noise_multiplier=args.d_para2)
             if args.defense == 'grad_sparse':
                 for i in range(2):
-                    output_pair[i] = defense_func.gradient_sparsification(output_pair[i], keep_ratio=args.d_para)
+                    output_pair[i] = defense_func.gradient_sparsification(output_pair[i], keep_ratio=out_d_para)
             z_up_clone, z_down_clone = output_pair
 
             # active party backward
@@ -404,9 +406,11 @@ if __name__ == '__main__':
     parser.add_argument('--defense', type=str, default='None',
                         help='Defense type: shuffle|lap_noise|ppdl|withdraw|grad_clip|gauss_noise|dp_gauss|grad_sparse|random_proj') 
     parser.add_argument('--d_para', type=float, default=0.0,
-                        help='Primary defense parameter (max_norm / sigma / keep_ratio / proj_dim / etc.)') 
+                        help='Primary defense parameter for gradients (max_norm / sigma / keep_ratio / proj_dim)') 
     parser.add_argument('--d_para2', type=float, default=1.0,
                         help='Secondary defense param (noise_multiplier for dp_gauss)')
+    parser.add_argument('--out_para', type=float, default=-1.0,
+                        help='Output-channel defense strength; defaults to --d_para if unset (<0)')
     args = parser.parse_args()
 
     for seed in range(5):
