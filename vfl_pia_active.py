@@ -165,20 +165,22 @@ def main(args):
             z_down_clone = torch.autograd.Variable(z_down_clone, requires_grad=True).to(args.device)
 
             # ===== Apply defense to OUTPUT embeddings BEFORE top model =====
+            # defend_scope: victim_only = index [1] (b); both = [0,1].
             # random_proj is skipped here — it changes dimensionality.
             out_d_para = args.d_para if args.out_para < 0 else args.out_para
+            defend_idx = [0, 1] if args.defend_scope == 'both' else [1]
             output_pair = [z_up_clone, z_down_clone]
             if args.defense == 'grad_clip':
-                for i in range(2):
+                for i in defend_idx:
                     output_pair[i] = defense_func.gradient_clipping(output_pair[i], max_norm=out_d_para)
             if args.defense == 'gauss_noise':
-                for i in range(2):
+                for i in defend_idx:
                     output_pair[i] = defense_func.add_gaussian_noise(output_pair[i], sigma=out_d_para)
             if args.defense == 'dp_gauss':
-                for i in range(2):
+                for i in defend_idx:
                     output_pair[i] = defense_func.dp_gaussian_mechanism(output_pair[i], max_norm=out_d_para, noise_multiplier=args.d_para2)
             if args.defense == 'grad_sparse':
-                for i in range(2):
+                for i in defend_idx:
                     output_pair[i] = defense_func.gradient_sparsification(output_pair[i], keep_ratio=out_d_para)
             z_up_clone, z_down_clone = output_pair
 
@@ -419,6 +421,9 @@ if __name__ == '__main__':
                         help='Secondary defense param (noise_multiplier for dp_gauss)')
     parser.add_argument('--out_para', type=float, default=-1.0,
                         help='Output-channel defense strength; defaults to --d_para if unset (<0)')
+    parser.add_argument('--defend_scope', type=str, default='victim_only',
+                        choices=['victim_only', 'both'],
+                        help='Which output channels to defend: victim_only (index 1 = b) or both (0+1)')
     
     args = parser.parse_args()
     for seed in range(10):
