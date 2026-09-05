@@ -325,12 +325,24 @@ def session_s3(a):
 
 def session_s4(a):
     """
-    Session 4+ -- P7 generalisation. Run this once per (dataset, property) with the
-    design frozen at whichever gate you stopped at, passing --dataset/--property.
-    The paper's acceptance bar is a consistent win in >=3 of
-    {adult-sex, adult-race, census, bankmk}, so each setting needs its own
-    undefended baseline in the same file.
+    Session s4 -- P6, the utility / epsilon table. (Generalisation moved to s1g; this
+    docstring used to claim P7 and no longer does.)
+
+    Four defence settings x {passive, active MR+LR}, all with an undefended baseline in
+    the same file so the utility column has something to be a drop *from*.
+
+    Pass --norm_threshold. Its default of 0.0 is not a usable value here: V1 gates on
+    victim_norm_raw > threshold, so 0.0 fires sigma_high on literally every batch and
+    the 'adaptive' row becomes a second copy of the 'static' row. Session s1's
+    norms_*.csv puts the passive median at 3.3451 (peak 3.6018) and the active median
+    at 2.7128, so ~3.0-3.3 is the defensible range -- and the fact that the two traces
+    disagree is itself a finding: a threshold tuned on the passive trace under-fires
+    against the stronger attacker.
     """
+    if a.adaptive_noise and not a.norm_threshold:
+        print('[warn] --norm_threshold is 0, so V1 fires sigma_high on every batch and '
+              's4_*_adaptive duplicates s4_*_static. Pass --norm_threshold 3.1 (session '
+              's1 passive median 3.3451, active 2.7128) or --adaptive_noise 0.')
     tag = '%s_%s' % (a.dataset, a.property)
     out, aout = 'res_s4_%s.csv' % tag, 'res_s4_active_%s.csv' % tag
     frozen = dict(defense='gauss_noise', defend_side='output',
