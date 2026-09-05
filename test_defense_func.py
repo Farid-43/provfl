@@ -212,11 +212,104 @@ def test_param_traps():
           all(d in D.KNOWN_DEFENSES for d in ALL_DEFENSES + list(D.STRUCTURAL_DEFENSES)))
 
 
+def test_norm_family():
+    """
+    The norm-distribution defenses. Their whole justification is an exact claim
+    about the statistic the attack reads -- the SORTED per-sample L_p norm vector
+    -- so the claim is asserted numerically here rather than trusted.
+    """
+    t = pair()[1]
+
+    # norm_align: the sorted-norm vector collapses to a constant, exactly.
+    aligned = D.norm_alignment(t, target_norm=-1.0, p=1)
+    n = aligned.norm(p=1, dim=1)
+    check('norm_align makes every L1 norm equal',
+          bool((n.max() - n.min()).abs().item() < 1e-4),
+          'spread %.2e' % (n.max() - n.min()).abs().item())
+    check('norm_align default target is the batch mean norm',
+          abs(n.mean().item() - t.norm(p=1, dim=1).mean().item()) < 1e-3)
+    check('norm_align honours an explicit target',
+          abs(D.norm_alignment(t, target_norm=3.0, p=1).norm(p=1, dim=1).mean().item()
+              - 3.0) < 1e-3)
+    check('norm_align keeps directions (cosine 1 with the input)',
+          bool(torch.nn.functional.cosine_similarity(aligned, t, dim=1).min().item()
+               > 1 - 1e-5))
+    # equalising the wrong order leaves a residual in the order the attack reads
+    l2 = D.norm_alignment(t, target_norm=-1.0, p=2).norm(p=1, dim=1)
+    check('norm_align at p=2 does NOT flatten the L1 spectrum',
+          bool((l2.max() - l2.min()).item() > 0.5),
+          'L1 spread %.3f -- p must match --norm_type' % (l2.max() - l2.min()).item())
+
+    # norm_quant: k levels, and k=1 degenerates to alignment
+    for k in (2, 4, 8):
+        q = D.norm_quantization(t, num_levels=k, p=1).norm(p=1, dim=1)
+        check('norm_quant k=%d yields <= %d distinct norms' % (k, k),
+              len(torch.unique(torch.round(q * 1e4) / 1e4)) <= k,
+              'got %d' % len(torch.unique(torch.round(q * 1e4) / 1e4)))
+    check('norm_quant k=1 == norm_align',
+          torch.allclose(D.norm_quantization(t, num_levels=1, p=1),
+                         D.norm_alignment(t, target_norm=-1.0, p=1), atol=1e-6))
+
+    # norm_permute: the placebo. Same multiset of norms => same sorted vector.
+    permuted = D.norm_permutation(t, p=1)
+    before = torch.sort(t.norm(p=1, dim=1)).values
+    after = torch.sort(permuted.norm(p=1, dim=1)).values
+    check('norm_permute leaves the SORTED norm vector unchanged (placebo)',
+          bool(torch.allclose(before, after, atol=1e-4)),
+          'max diff %.2e' % (before - after).abs().max().item())
+    check('norm_permute does change the tensor (it is not a plain no-op)',
+          not same(permuted, t))
+
+    # gradients must still flow: these sit inside the forward graph
+    leaf = torch.randn(64, 16, requires_grad=True)
+    for name, fn in (('norm_align', lambda x: D.norm_alignment(x, -1.0, 1)),
+                     ('norm_quant', lambda x: D.norm_quantization(x, 4, 1)),
+                     ('norm_permute', lambda x: D.norm_permutation(x, 1))):
+        leaf.grad = None
+        fn(leaf).sum().backward()
+        check('%s is differentiable' % name,
+              leaf.grad is not None and bool(torch.isfinite(leaf.grad).all()))
+
+    # routing: forward-side only, victim only, and refused on the gradient side
+    for name in D.NORM_FAMILY:
+        p0 = pair()
+        out, _ = D.apply_perturbation(clone(p0), mk(name, out_para=-1.0), side='output')
+        check('%s perturbs the victim on the output side' % name, not same(out[1], p0[1]))
+        check('%s leaves the attacker untouched' % name, same(out[0], p0[0]))
+        out, _ = D.apply_perturbation(clone(p0), mk(name), side='grad')
+        check('%s is refused on the gradient side' % name,
+              same(out[0], p0[0]) and same(out[1], p0[1]))
+    check('the norm family is registered in KNOWN_DEFENSES',
+          all(d in D.KNOWN_DEFENSES for d in D.NORM_FAMILY))
+
+    # --out_para -1 must keep meaning "target the batch mean". _strength() would
+    # fall back to --d_para (0.05) here, which would instead pin every embedding at
+    # norm 0.05 -- a utility collapse unrelated to the norm spectrum, and the kind
+    # of artefact that gets published as a privacy/utility tradeoff by mistake.
+    p0 = pair()
+    out, info = D.apply_perturbation(clone(p0), mk('norm_align', out_para=-1.0,
+                                                   d_para=0.05), side='output')
+    got = out[1].norm(p=1, dim=1).mean().item()
+    want = p0[1].norm(p=1, dim=1).mean().item()
+    check('norm_align --out_para -1 targets the batch mean, not d_para',
+          abs(got - want) < 1e-3, 'got %.4f want %.4f' % (got, want))
+    out, _ = D.apply_perturbation(clone(p0), mk('norm_align', out_para=3.0),
+                                  side='output')
+    check('norm_align honours an explicit --out_para through the dispatcher',
+          abs(out[1].norm(p=1, dim=1).mean().item() - 3.0) < 1e-3)
+    # a stray --d_para must not silently become the quantisation level either
+    out, _ = D.apply_perturbation(clone(p0), mk('norm_quant', out_para=4.0,
+                                               d_para=0.05), side='output')
+    q = out[1].norm(p=1, dim=1)
+    check('norm_quant reads the level from --out_para',
+          len(torch.unique(torch.round(q * 1e4) / 1e4)) <= 4)
+
+
 def main():
     argparse.ArgumentParser(description=__doc__).parse_args()
     for fn in (test_routing, test_structural_noop, test_scope_isolation,
                test_side_gating, test_resolve_sigma, test_curriculum,
-               test_mechanisms, test_param_traps):
+               test_mechanisms, test_param_traps, test_norm_family):
         print('\n-- %s' % fn.__name__)
         fn()
     print('\n%d checks failed%s'

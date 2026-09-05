@@ -14,7 +14,23 @@ Usage on Kaggle
   !python kaggle_run.py --session s1 --part 1/2      # first half, ~4h
   !python kaggle_run.py --session s1 --part 2/2      # second half, next notebook run
   !python kaggle_run.py --session s1b                # rest of the comparison table
-  !python kaggle_run.py --session s2 --norm_threshold 3.9
+  !python kaggle_run.py --session s1c                # confound probes + ceiling proof
+  !python kaggle_run.py --session s1g --dataset census   # same decomposition, 2nd dataset
+
+Which session, and why (state as of 2026-09-06)
+----------------------------------------------
+s1 and s1b are done for adult/sex. Recombining their per-channel rows with
+analyze_clean_channel.py showed the C1 adversary keeps its full accuracy from
+a_output and a_grad alone -- tensors it never transmits -- so wire perturbation
+cannot bound this attack. That result sets the order of everything left:
+
+  s1c  first. Two ~5-min probes decide whether the ceiling is a fact about VFL
+       or an artefact of adult's relationship_*/marital_* columns, and norm_align
+       supplies the constructive half (provably zero norm leakage on b_output).
+  s1g  second, once per extra (dataset, property). A single-dataset ceiling will
+       not survive review; three consistent replications will.
+  s2/s3 are deprecated -- they sweep sigma inside the range s1 measured as inert.
+       Selecting one prints why. s4 (the utility/epsilon table) still stands.
 
 Splitting a session
 -------------------
@@ -43,12 +59,51 @@ import time
 DEFENSE = 'vfl_pia_defense.py'      # passive attacker, XGB only, 5 rows per run
 ACTIVE = 'vfl_pia_active.py'        # MR/LR attacker, DT+XGB+ensemble, 10 rows per run
 
+# Confound probes. Neither trains a VFL model, so both are minutes rather than
+# hours, and neither takes --n_seeds/--out_csv: they write their own fixed files
+# (ab_feat_correlation.csv, raw_res_baseline_<dataset>.csv). They live under
+# ablation/, which has no __init__.py, so they are launched as namespace-package
+# modules -- `python ablation/x.py` would put ablation/ on sys.path[0] and
+# `from dataloader import get_data` would fail.
+CORRELATION = 'ablation/test_ab_correlation.py'   # Pearson r(attacker feature, property)
+RAW_BASELINE = 'ablation/test_ab_raw_baseline.py'  # the attack on RAW a-side features
+PROBE_SCRIPTS = (CORRELATION, RAW_BASELINE)
+
 MARKER_DIR = 'runs_done'
 LOG_CSV = 'kaggle_run_log.csv'
 
-# Rough per-job wall clock at 5 seeds, from the 12h/34-job run that produced
-# res_active_adult_part*.txt. Used only to warn before the 12h ceiling.
-EST_MIN = {DEFENSE: 22, ACTIVE: 34}
+# Per-job wall clock, recalibrated against the 20-job s1 campaign of 2026-09-05
+# (res/1st part, res/2nd part). Measured minutes: DEFENSE 11.6-12.4 except
+# lap_noise at 44.9; ACTIVE 11.3-13.5. The previous 22/34 estimates were ~2x
+# pessimistic, which made the whole campaign look like 23.7 h when it is ~10 h
+# and made the budget guard stop sessions that had hours left.
+EST_MIN = {DEFENSE: 14, ACTIVE: 16, CORRELATION: 3, RAW_BASELINE: 8}
+
+# Mechanisms whose cost is not the training loop. DPLaplacianNoiseApplyer draws
+# noise per coordinate in python, so lap_noise ran 3.7x the other DEFENSE jobs;
+# dp_gc_ppdl is worse still, which is why ppdl stays out of every session.
+EST_MIN_OVERRIDE = {'lap_noise': 50, 'ppdl': 240}
+
+# EST_MIN was measured on adult only, and the other datasets are not the same size.
+# From config.json and dataloader.py's docstrings:
+#
+#   adult    44 355 rows x 111 dims, 20 epochs   <- the calibration point, factor 1.0
+#   bankmk   45 211 rows x  51 dims, 30 epochs   <- same rows, fewer dims, 1.5x epochs
+#   census  299 285 rows x 511 dims, 30 epochs   <- 6.7x rows, 4.6x dims, 1.5x epochs
+#
+# These factors are deliberately rough: they are there so `--list` and the budget guard
+# stop implying a census session costs what an adult session costs. Replace them with
+# measured numbers after the first census job the way EST_MIN itself was replaced --
+# a wrong-by-2x estimate that is *labelled* as an estimate costs nothing, but a census
+# session planned at adult prices is how a 12 h Kaggle window gets truncated.
+DATASET_FACTOR = {'adult': 1.0, 'bankmk': 1.5, 'census': 8.0,
+                  'lawschool': 1.5, 'health': 2.0}
+
+
+def est_of(j):
+    """Estimated minutes for one job, honouring per-defense and per-dataset scaling."""
+    base = EST_MIN_OVERRIDE.get(j['flags'].get('defense'), EST_MIN[j['script']])
+    return base * DATASET_FACTOR.get(j['flags'].get('dataset', 'adult'), 1.0)
 
 def job(jid, script, **flags):
     """One invocation. flags become --key value pairs; None values are dropped."""
@@ -301,8 +356,152 @@ def session_s4(a):
     return jobs
 
 
-SESSIONS = {'s1': session_s1, 's1b': session_s1b, 's2': session_s2,
-            's3': session_s3, 's4': session_s4}
+def session_s1c(a):
+    """
+    Session 1c -- close the two holes a reviewer will put a finger through.
+
+    Session s1 plus analyze_clean_channel.py established that the C1 adversary
+    reaches its full accuracy (MAE ~0.0136 passive, ~0.0065 active on adult/sex)
+    from a_output and a_grad alone -- tensors it computes inside its own bottom
+    model and never transmits. Every mechanism in the literature perturbs the
+    wire, so none of them can reach that channel. Two objections remain, and
+    neither needs new analysis code, only these runs:
+
+    (1) THE CONFOUND. adult's property column sits at feature index 0, and
+        utils.split_data gives the victim data[:, 0:50] and the attacker
+        data[:, 50:111]. So sex_Male is exclusively on the victim's side -- good.
+        But the attacker's half holds relationship_* and marital_status_*, which
+        are near-deterministic proxies for sex. If the attacker can read the
+        property off its own RAW features, the ceiling is a dataset artefact
+        rather than a property of VFL co-training. test_ab_correlation.py already
+        measures exactly this (max/mean/median Pearson r between each attacker
+        feature and the property label), and test_ab_raw_baseline.py runs the
+        attack without any VFL training. Both are cheap and settle it.
+
+    (2) THE CONSTRUCTIVE HALF. The ceiling is currently an upper bound the tried
+        mechanisms never approach. norm_align drives the victim's sorted-norm
+        vector to a constant, so b_output leakage is provably zero -- if MAE_all
+        still lands on MAE_own, the bound is tight, and that is a theorem-shaped
+        statement rather than a table of failures. norm_permute is the placebo
+        that must score zero; norm_quant traces the curve between them.
+
+    The high-sigma probe finishes the additive-noise story: s1 stopped at
+    out_para=0.50 with MAE_all still 0.0111 and AUC 0.8954. Taking sigma to 1/2/4
+    shows whether output-side Gaussian noise EVER helps before utility collapses,
+    which is the last place a reader can hope the negative result is a tuning
+    failure.
+    """
+    d, p = a.dataset, a.property
+    out = 'res_s1c_%s.csv' % d
+    vic = dict(defend_side='output', defend_scope='victim_only', out_csv=out)
+    jobs = [
+        # (1) the confound probes: ~11 min for both, and they decide whether the
+        #     ceiling is a statement about VFL or about this dataset's one-hot columns
+        job('s1c_feat_corr', CORRELATION),
+        # baseline_pipeline hardcodes SVM+DT+NN and ignores --classifier; the row it
+        # writes carries gnd_frac next to *_a_input_pred, so MAE comes straight out
+        job('s1c_raw_baseline', RAW_BASELINE),
+        job('s1c_none_probe', DEFENSE, defense='None', log_norms=1, out_csv=out),
+        # (2) constructive ceiling: provably-zero norm leakage
+        job('s1c_align_mean', DEFENSE, defense='norm_align', out_para=-1.0,
+            log_norms=1, **vic),
+        job('s1c_quant_02', DEFENSE, defense='norm_quant', out_para=2.0, **vic),
+        job('s1c_quant_08', DEFENSE, defense='norm_quant', out_para=8.0, **vic),
+        # the placebo: same norm multiset, so PrivacyGain must come out ~0.0000
+        job('s1c_permute', DEFENSE, defense='norm_permute', out_para=-1.0, **vic),
+        # the last of the additive-noise sweep
+        job('s1c_gauss_out_100', DEFENSE, defense='gauss_noise', out_para=1.0, **vic),
+        job('s1c_gauss_out_200', DEFENSE, defense='gauss_noise', out_para=2.0, **vic),
+        job('s1c_gauss_out_400', DEFENSE, defense='gauss_noise', out_para=4.0, **vic),
+    ]
+    aout = 'res_s1c_active_%s.csv' % d
+    strong = dict(use_MR=1, use_LR=1, out_csv=aout)
+    jobs += [
+        job('s1ca_none', ACTIVE, defense='None', log_norms=1, **strong),
+        job('s1ca_align_mean', ACTIVE, defense='norm_align', out_para=-1.0,
+            defend_side='output', defend_scope='victim_only', log_norms=1, **strong),
+        job('s1ca_gauss_out_200', ACTIVE, defense='gauss_noise', out_para=2.0,
+            defend_side='output', defend_scope='victim_only', **strong),
+    ]
+    for j in jobs:
+        j['flags'].setdefault('dataset', d)
+        j['flags'].setdefault('property', p)
+    return jobs
+
+
+def session_s1g(a):
+    """
+    Session 1g -- the same decomposition on another (dataset, property).
+
+    The roadmap put generalisation at P6, after the two design gates. The gates
+    tested whether norm-triggered adaptive Gaussian noise beats static Gaussian
+    noise, and s1 showed the entire family is inert on the only channel a victim
+    can reach, so that ordering is now backwards: the result that needs
+    replicating is the DECOMPOSITION, and it needs replicating before anything
+    else, because a single-dataset finding will not survive review.
+
+    Seven DEFENSE + two ACTIVE jobs, chosen so each of the paper's claims gets one
+    supporting row per dataset and nothing else:
+
+      none            the undefended reference (and the norm trace)
+      gauss out 0.05  the only unilaterally deployable additive config
+      gauss out 0.50  the same at 10x, to pre-empt "you under-tuned it"
+      scope=both      the inflation delta -- how much of the old numbers came
+                      from perturbing the attacker's own tensors
+      withdraw 0.5    ProVFL's own recommended mitigation (D5)
+      shuffle 0.5     D4
+      norm_align      the provable-zero-leakage point
+
+    Run once per setting: --session s1g --dataset census --property sex, etc. The
+    acceptance bar stays the roadmap's: consistent behaviour in >=3 of
+    {adult-sex, adult-race, census, bankmk}.
+    """
+    tag = '%s_%s' % (a.dataset, a.property)
+    out, aout = 'res_s1g_%s.csv' % tag, 'res_s1g_active_%s.csv' % tag
+    vic = dict(defend_side='output', defend_scope='victim_only')
+    jobs = [
+        job('s1g_%s_none' % tag, DEFENSE, defense='None', log_norms=1),
+        job('s1g_%s_gauss_005' % tag, DEFENSE, defense='gauss_noise',
+            out_para=0.05, **vic),
+        job('s1g_%s_gauss_050' % tag, DEFENSE, defense='gauss_noise',
+            out_para=0.50, **vic),
+        job('s1g_%s_scopeboth' % tag, DEFENSE, defense='gauss_noise',
+            defend_side='both', d_para=0.05, out_para=0.05, defend_scope='both'),
+        job('s1g_%s_withdraw_05' % tag, DEFENSE, defense='withdraw', d_para=0.5),
+        job('s1g_%s_shuffle_05' % tag, DEFENSE, defense='shuffle', d_para=0.5),
+        job('s1g_%s_align' % tag, DEFENSE, defense='norm_align', out_para=-1.0,
+            log_norms=1, **vic),
+        job('s1ga_%s_none' % tag, ACTIVE, defense='None', use_MR=1, use_LR=1,
+            log_norms=1),
+        job('s1ga_%s_align' % tag, ACTIVE, defense='norm_align', out_para=-1.0,
+            use_MR=1, use_LR=1, log_norms=1, **vic),
+    ]
+    for j in jobs:
+        j['flags'].setdefault('dataset', a.dataset)
+        j['flags'].setdefault('property', a.property)
+        j['flags']['out_csv'] = aout if j['script'] == ACTIVE else out
+    return jobs
+
+
+# Sessions whose premise session s1 falsified. They are kept runnable -- the
+# adaptive-noise design is still a legitimate ablation and someone will ask for
+# the numbers -- but selecting one prints why it is no longer on the critical
+# path, so the warning cannot be missed the way a docstring can.
+DEPRECATED_SESSIONS = {
+    's2': 'Gate 1 asks whether norm-triggered adaptive Gaussian noise beats static '
+          'Gaussian noise. Both arms live in sigma 0.005-0.20 on defend_side=output, '
+          'and s1 measured PrivacyGain there as -0.0009/-0.0033/+0.0023 at '
+          'sigma=0.05/0.10/0.20 (p=0.6150 at the reference point). The comparison is '
+          'between two inert conditions. Run s1c and s1g first; if you still want '
+          'these numbers, they are an ablation, not a gate.',
+    's3': 'Gate 2 tunes a curriculum on top of the Gate 1 trigger. It inherits Gate '
+          "1's premise, so the same objection applies with one more free parameter.",
+}
+
+
+SESSIONS = {'s1': session_s1, 's1b': session_s1b, 's1c': session_s1c,
+            's1g': session_s1g, 's2': session_s2, 's3': session_s3,
+            's4': session_s4}
 
 def marker_path(j, a):
     """Markers are namespaced by dataset/property so s1 on adult and on census
@@ -312,15 +511,22 @@ def marker_path(j, a):
 
 
 def build_cmd(j, a):
-    cmd = [sys.executable, j['script']]
+    probe = j['script'] in PROBE_SCRIPTS
+    if '/' in j['script']:
+        # namespace-package launch, so the repo root stays on sys.path
+        cmd = [sys.executable, '-m', j['script'][:-3].replace('/', '.')]
+    else:
+        cmd = [sys.executable, j['script']]
     flags = dict(j['flags'])
     flags.setdefault('gpu', a.gpu)
     if a.smoke:
-        flags['n_seeds'] = 1
         flags['epochs'] = 3
         flags['attack_epoch'] = 2          # default 18 never fires with 3 epochs
-        flags['out_csv'] = 'res_smoke_%s.csv' % a.dataset
-    else:
+        if not probe:
+            flags['n_seeds'] = 1
+            flags['out_csv'] = 'res_smoke_%s.csv' % a.dataset
+    elif not probe:
+        # the probes' parsers have no --n_seeds; they are single-pass by construction
         flags.setdefault('n_seeds', a.n_seeds)
     for k, v in sorted(flags.items()):
         cmd += ['--%s' % k, str(v)]
@@ -439,6 +645,8 @@ def build_parser():
 
 def main(argv=None):
     a = build_parser().parse_args(argv)
+    if a.session in DEPRECATED_SESSIONS:
+        print('[DEPRECATED] session %s -- %s\n' % (a.session, DEPRECATED_SESSIONS[a.session]))
     jobs = SESSIONS[a.session](a)
     if a.only:
         jobs = [j for j in jobs if any(s in j['id'] for s in a.only)]
@@ -448,23 +656,27 @@ def main(argv=None):
     if a.part:
         jobs = slice_part(jobs, a.part)
 
-    est = sum(EST_MIN[j['script']] for j in jobs)
+    est = sum(est_of(j) for j in jobs)
     if a.smoke:
         est = 2 * len(jobs)
     print('session %s%s | %s/%s | %d jobs%s | est %.0f min (%.1f h)'
           % (a.session, ' part %s' % a.part if a.part else '', a.dataset, a.property,
              len(jobs), ' of %d' % n_total if a.part else '', est, est / 60.0))
+    over_budget = est > a.budget_min and not a.smoke
+    if over_budget:
+        # Printed before the --list return as well: --list is exactly when the session
+        # is being planned, and a 17 h census estimate is information you want then,
+        # not after the notebook has been saved for background execution.
+        print('[warn] estimate %.0f min exceeds the %.0f min budget. Markers make '
+              'this resumable -- run the session again next Kaggle session to finish, '
+              'or split it with --part 1/2 and --part 2/2.'
+              % (est, a.budget_min))
     if a.list:
         for i, j in enumerate(jobs, 1):
             # print the real command, so --list cannot drift from what --session runs
             print('%2d. %-30s %s' % (i, j['id'], ' '.join(build_cmd(j, a)[1:])))
         return 0
     gpu_report()
-    if est > a.budget_min and not a.smoke:
-        print('[warn] estimate %.0f min exceeds the %.0f min budget. Markers make '
-              'this resumable -- run the session again next Kaggle session to finish, '
-              'or split it with --part 1/2 and --part 2/2.'
-              % (est, a.budget_min))
 
     if not a.dry_run:
         os.makedirs(MARKER_DIR, exist_ok=True)
@@ -473,11 +685,11 @@ def main(argv=None):
     t_start = time.time()
     for i, j in enumerate(jobs, 1):
         elapsed = (time.time() - t_start) / 60.0
-        if elapsed + EST_MIN[j['script']] > a.budget_min and not a.dry_run:
+        if elapsed + est_of(j) > a.budget_min and not a.dry_run:
             print('\n[stop] %.0f min elapsed, next job needs ~%d more, budget is %.0f. '
                   'Remaining jobs keep their markers unset -- re-run this exact '
                   'command in the next session to continue.'
-                  % (elapsed, EST_MIN[j['script']], a.budget_min))
+                  % (elapsed, est_of(j), a.budget_min))
             break
         rc, mins = run_job(j, a, i, len(jobs))
         spent += mins

@@ -1,8 +1,11 @@
+import os
+
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
+from datasets import resolve_data_dir
 from my_utils.utils import tensor_data_create
 
 
@@ -226,8 +229,12 @@ def load_census_data(
             They are in the following order [train, test, one-hot train, one-hot test]
     """
 
-    filename_train = "../data/census/census-income.data"
-    filename_test = "../data/census/census-income.test"
+    # Was '../data/census/census-income.data', which resolves only when the process is
+    # launched from a subdirectory of the repo -- not from the repo root, which is where
+    # every Kaggle run starts. See datasets.resolve_data_dir.
+    _dir = resolve_data_dir('census', sentinel='census-income.data')
+    filename_train = os.path.join(_dir, "census-income.data")
+    filename_test = os.path.join(_dir, "census-income.test")
 
     column_names = [
         "age",

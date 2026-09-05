@@ -18,19 +18,28 @@ patches are now fixes in the tree itself:
     pandas' .items() -- no path sed, no .iteritems() sed.
   * vfl_pia_active.py already casts prop_label.long() -- that sed was a no-op.
 
-What is left is genuinely environmental: fetch the UCI Adult files, confirm the
+What is left is genuinely environmental: fetch the UCI data files, confirm the
 accelerator is on, and prove the defense dispatcher behaves before any GPU time is
 spent. Nothing here trains a model.
 
     python kaggle_setup.py --dataset adult      # default
+    python kaggle_setup.py --dataset census     # before --session s1g on census
+    python kaggle_setup.py --dataset bankmk     # before --session s1g on bankmk
     python kaggle_setup.py --skip_test          # fetch data only
+
+census and bankmk are downloadable now (they were not before Round 7): UCI serves both
+only as archives, census as a zip wrapping a tar.gz, so DATA_ARCHIVES walks one level
+of nesting. Their loaders also used to hard-code '../data/...' and only worked when
+launched from a subdirectory -- gate [4/5] now checks the resolved path per dataset.
 """
 import argparse
+import importlib
 import os
 import shutil
 import ssl
 import subprocess
 import sys
+import tarfile
 import urllib.request
 import zipfile
 
@@ -40,6 +49,11 @@ import zipfile
 # Each entry is (destination, [candidate URLs]). UCI moved Adult from the old
 # /ml/machine-learning-databases/ tree to /static/public/2/, and serves the pair as a
 # zip there; both are listed because which one resolves has changed more than once.
+#
+# census and bankmk have no direct-file URLs at all any more -- UCI serves them only as
+# archives, so their rows are empty lists and DATA_ARCHIVES below does the real work.
+# The old census-income-mld/*.gz paths that the loader's comments implied are 404 as of
+# 2026-09-06; verified, not assumed.
 DATA_URLS = {
     'adult': [
         ('data/adult/adult.data',
@@ -48,14 +62,51 @@ DATA_URLS = {
          ['https://archive.ics.uci.edu/ml/machine-learning-databases/adult/adult.test']),
     ],
     'bankmk': [
-        ('data/bankmk/bank-full.csv', []),        # not auto-downloadable, see README
+        ('data/bankmk/bank-full.csv', []),
+    ],
+    'census': [
+        ('data/census/census-income.data', []),
+        ('data/census/census-income.test', []),
     ],
 }
 
-# Fallback: one zip holding adult.data and adult.test byte-identically, extracted when
-# the direct files fail.
-DATA_ZIPS = {'adult': ('https://archive.ics.uci.edu/static/public/2/adult.zip',
-                       ['adult.data', 'adult.test'])}
+# Archive fallbacks, tried in order when the direct files above fail or do not exist.
+# `inner` handles one level of nesting: UCI's census download is a zip containing a
+# single tar.gz containing the data, and its bank+marketing.zip is a zip of zips.
+#
+#   url      what to download
+#   member   {name inside the archive: basename to write into data/<dataset>/}
+#   inner    optional archive *inside* the outer one to descend into first
+#
+# Sizes for the record: bank.zip 0.6 MB; census+income+kdd.zip 9.8 MB expanding to
+# ~156 MB (census-income.data is 103.9 MB). Both fine on Kaggle, neither fine to leave
+# to a guess about member names -- these were read off the real archives.
+DATA_ARCHIVES = {
+    'adult': [
+        dict(url='https://archive.ics.uci.edu/static/public/2/adult.zip',
+             members={'adult.data': 'adult.data', 'adult.test': 'adult.test'}),
+    ],
+    'bankmk': [
+        dict(url='https://archive.ics.uci.edu/ml/machine-learning-databases/00222/'
+                 'bank.zip',
+             members={'bank-full.csv': 'bank-full.csv'}),
+        dict(url='https://archive.ics.uci.edu/static/public/222/bank+marketing.zip',
+             inner='bank.zip',
+             members={'bank-full.csv': 'bank-full.csv'}),
+    ],
+    'census': [
+        dict(url='https://archive.ics.uci.edu/static/public/117/census+income+kdd.zip',
+             inner='census.tar.gz',
+             members={'census-income.data': 'census-income.data',
+                      'census-income.test': 'census-income.test'}),
+    ],
+}
+
+# What check_package_resolution should confirm is loadable, per dataset: the module that
+# dataloader dispatches to, and a file that must exist for it to work.
+DATASET_SENTINEL = {'adult': ('datasets.adult', 'data/adult/adult.data'),
+                    'bankmk': ('datasets.bankmk', 'data/bankmk/bank-full.csv'),
+                    'census': ('datasets.census', 'data/census/census-income.data')}
 
 REQUIRED_IMPORTS = [('torch', 'torch'), ('pandas', 'pandas'), ('numpy', 'numpy'),
                     ('sklearn', 'scikit-learn'), ('xgboost', 'xgboost'),
@@ -106,7 +157,8 @@ def fetch(rel_path, urls, insecure=False):
         print('  have %-28s %8.1f KB' % (rel_path, os.path.getsize(rel_path) / 1024.0))
         return True
     if not urls:
-        print('  MISS %-28s no download URL; place it there by hand' % rel_path)
+        print('  need  %-28s no direct URL; the archive fallback will fetch it'
+              % rel_path)
         return False
     err = 'no transport available'
     for url in urls:
@@ -119,40 +171,90 @@ def fetch(rel_path, urls, insecure=False):
     return False
 
 
-def fetch_zip_fallback(dataset, targets, insecure=False):
-    """Last resort: pull the dataset's zip and extract only the members we need."""
-    spec = DATA_ZIPS.get(dataset)
-    if not spec:
-        return False
-    url, members = spec
-    tmp = os.path.join('data', dataset, '_%s.zip' % dataset)
-    print('  trying the zip fallback: %s' % url)
-    err = _download(url, tmp, insecure=insecure)
-    if err is not None:
-        print('  FAIL zip %s' % err)
-        return False
+def _open_archive(path):
+    """Return (kind, handle) for a zip or tar archive on disk."""
+    if zipfile.is_zipfile(path):
+        return 'zip', zipfile.ZipFile(path)
+    return 'tar', tarfile.open(path, mode='r:*')
+
+
+def _extract(members, dest_dir, names, reader):
+    """Write each wanted member out. `names` lists what the archive holds, `reader`
+    yields a file object for a given name. Returns True when all members landed."""
     ok = True
-    try:
-        with zipfile.ZipFile(tmp) as z:
-            names = set(z.namelist())
-            for member in members:
-                dest = os.path.join('data', dataset, os.path.basename(member))
-                if member not in names:
-                    print('  FAIL %-28s not in the zip (has %s)'
-                          % (dest, ', '.join(sorted(names))))
-                    ok = False
-                    continue
-                with z.open(member) as src, open(dest, 'wb') as out:
-                    shutil.copyfileobj(src, out)
-                print('  got  %-28s %8.1f KB (from zip)'
-                      % (dest, os.path.getsize(dest) / 1024.0))
-    except zipfile.BadZipFile as exc:
-        print('  FAIL zip is not readable: %s' % exc)
-        ok = False
-    finally:
-        if os.path.isfile(tmp):
-            os.remove(tmp)
-    return ok and all(os.path.isfile(t) and os.path.getsize(t) > 0 for t in targets)
+    for member, basename in sorted(members.items()):
+        dest = os.path.join(dest_dir, basename)
+        match = member if member in names else next(
+            (n for n in names if os.path.basename(n) == member), None)
+        if match is None:
+            print('  FAIL %-28s not in the archive (has %s)'
+                  % (dest, ', '.join(sorted(names)[:6])))
+            ok = False
+            continue
+        with reader(match) as src, open(dest, 'wb') as out:
+            shutil.copyfileobj(src, out)
+        print('  got  %-28s %8.1f KB (extracted)'
+              % (dest, os.path.getsize(dest) / 1024.0))
+    return ok
+
+
+def fetch_archive_fallback(dataset, targets, insecure=False):
+    """Download the dataset's archive(s) and extract only the members we need.
+
+    Handles one level of nesting because UCI needs it: census+income+kdd.zip holds a
+    single census.tar.gz which holds the data, and bank+marketing.zip is a zip of zips.
+    The inner archive is spooled to disk rather than held in memory -- census-income.data
+    alone is 103.9 MB, and a Kaggle session has better uses for that RAM.
+    """
+    specs = DATA_ARCHIVES.get(dataset) or []
+    dest_dir = os.path.join('data', dataset)
+    os.makedirs(dest_dir, exist_ok=True)
+    for spec in specs:
+        tmp = os.path.join(dest_dir, '_outer_%s' % dataset)
+        print('  trying the archive fallback: %s' % spec['url'])
+        err = _download(spec['url'], tmp, insecure=insecure)
+        if err is not None:
+            print('  FAIL download: %s' % err)
+            continue
+        inner_tmp = None
+        try:
+            kind, arch = _open_archive(tmp)
+            with arch:
+                if kind == 'zip':
+                    names, reader = arch.namelist(), arch.open
+                else:
+                    names = arch.getnames()
+                    reader = lambda n: arch.extractfile(n)      # noqa: E731
+                if spec.get('inner'):
+                    match = next((n for n in names
+                                  if os.path.basename(n) == spec['inner']), None)
+                    if match is None:
+                        print('  FAIL inner archive %s not present (has %s)'
+                              % (spec['inner'], ', '.join(sorted(names)[:6])))
+                        continue
+                    inner_tmp = os.path.join(dest_dir, '_inner_%s' % dataset)
+                    with reader(match) as src, open(inner_tmp, 'wb') as out:
+                        shutil.copyfileobj(src, out)
+                    kind2, inner = _open_archive(inner_tmp)
+                    with inner:
+                        if kind2 == 'zip':
+                            got = _extract(spec['members'], dest_dir,
+                                           inner.namelist(), inner.open)
+                        else:
+                            got = _extract(spec['members'], dest_dir,
+                                           inner.getnames(), inner.extractfile)
+                else:
+                    got = _extract(spec['members'], dest_dir, names, reader)
+        except (zipfile.BadZipFile, tarfile.TarError, OSError) as exc:
+            print('  FAIL archive is not readable: %s' % exc)
+            got = False
+        finally:
+            for p in (tmp, inner_tmp):
+                if p and os.path.isfile(p):
+                    os.remove(p)
+        if got and all(os.path.isfile(t) and os.path.getsize(t) > 0 for t in targets):
+            return True
+    return False
 
 
 def check_imports():
@@ -192,9 +294,16 @@ def check_device():
     return False
 
 
-def check_package_resolution():
-    """Prove the repo's `datasets` beat any preinstalled package of the same name, and
-    that dataloader imports without dragging in the celeba image stack."""
+def check_package_resolution(dataset='adult'):
+    """Prove the repo's `datasets` beat any preinstalled package of the same name, that
+    dataloader imports without dragging in the celeba image stack, and that the loader
+    for *this* dataset resolves its data directory to a file that exists.
+
+    That last part is not pedantry. Only adult.py resolved its paths from __file__;
+    census.py and bankmk.py hard-coded '../data/...', which from the repo root points
+    outside the checkout. They now share datasets.resolve_data_dir, and this gate is
+    what proves it before a session is spent finding out.
+    """
     ok = True
     try:
         import datasets
@@ -207,22 +316,40 @@ def check_package_resolution():
         return False
     try:
         import dataloader                                            # noqa: F401
-        from datasets.adult import TRAIN_DATA_FILE
-        print('  dataloader imports clean | adult data at %s' % TRAIN_DATA_FILE)
-        ok = ok and os.path.isfile(TRAIN_DATA_FILE)
-        if not os.path.isfile(TRAIN_DATA_FILE):
-            print('  but that file does not exist yet   <-- WRONG')
+        print('  dataloader imports clean')
     except Exception as exc:                       # noqa: BLE001 - report and continue
         print('  dataloader import failed: %s' % exc)
-        ok = False
-    return ok
+        return False
+
+    mod_name, sentinel = DATASET_SENTINEL.get(dataset, (None, None))
+    if mod_name is None:
+        return ok
+    try:
+        importlib.import_module(mod_name)
+    except Exception as exc:                       # noqa: BLE001 - report and continue
+        print('  %s import failed: %s' % (mod_name, exc))
+        return False
+    if dataset == 'adult':
+        from datasets.adult import TRAIN_DATA_FILE
+        resolved = TRAIN_DATA_FILE
+    else:
+        from datasets import resolve_data_dir
+        names = ('bankmk', 'bankmarketing') if dataset == 'bankmk' else (dataset,)
+        resolved = os.path.join(
+            resolve_data_dir(*names, sentinel=os.path.basename(sentinel)),
+            os.path.basename(sentinel))
+    exists = os.path.isfile(resolved)
+    print('  %s -> %s%s' % (mod_name, resolved, '' if exists else '   <-- MISSING'))
+    return ok and exists
 
 
 def run_unit_test():
-    """test_defense_func.py: 66 pure-tensor checks, no dataset, under a second on CPU.
+    """test_defense_func.py: ~100 pure-tensor checks, no dataset, under a second on CPU.
 
     Worth the second. It is what catches a defense that silently no-ops -- which would
-    otherwise show up as a PrivacyGain of exactly 0.0000 after 22 minutes of GPU time.
+    otherwise show up as a PrivacyGain of exactly 0.0000 after 12 minutes of GPU time.
+    This is also the first place the norm-family checks execute: torch is not installed
+    on the authoring machine, so they arrive here syntax-verified only.
     """
     if not os.path.isfile('test_defense_func.py'):
         print('  test_defense_func.py not found, skipping')
@@ -254,13 +381,13 @@ def main(argv=None):
     spec = DATA_URLS[a.dataset]
     data = all([fetch(rel, urls, insecure=a.insecure) for rel, urls in spec])
     if not data:
-        data = fetch_zip_fallback(a.dataset, [rel for rel, _ in spec],
-                                  insecure=a.insecure)
+        data = fetch_archive_fallback(a.dataset, [rel for rel, _ in spec],
+                                      insecure=a.insecure)
     if not data and not a.insecure:
         print('  if the errors above are all CERTIFICATE_VERIFY_FAILED, this host\'s CA '
               'bundle is stale rather than UCI being down; retry with --insecure')
     print('\n[4/5] package resolution')
-    pkg = check_package_resolution()
+    pkg = check_package_resolution(a.dataset)
     print('\n[5/5] defense dispatcher')
     tests = True if a.skip_test else run_unit_test()
 
@@ -270,9 +397,10 @@ def main(argv=None):
         print('  %-14s %s' % (name, 'ok' if ok else 'FAILED'))
     if all([deps, gpu, data, pkg, tests]):
         print('\nready. Next, in order:')
-        print('  !python kaggle_run.py --session s1 --smoke')
-        print('  !python kaggle_run.py --session s1 --part 1/2')
-        print('  !python kaggle_run.py --session s1 --part 2/2   # next notebook run')
+        print('  !python kaggle_run.py --session s1c --smoke')
+        print('  !python kaggle_run.py --session s1c            # ~2.9 h, 13 jobs')
+        print('  !python kaggle_setup.py --dataset census       # next session')
+        print('  !python kaggle_run.py --session s1g --dataset census --property sex')
         return 0
     print('\nfix the FAILED rows above before starting the campaign; running anyway '
           'either crashes on the first job or produces numbers you cannot use.')

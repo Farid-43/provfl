@@ -181,3 +181,15 @@ res_*.csv
 norms_*.csv
 kaggle_run_log.csv
 experiment_result_*/
+# Scratch downloads from a Kaggle session. The one archived campaign under res/ is
+# force-added and stays tracked; anything dropped in here afterwards does not.
+res
+
+# The base paper (IEEE TIFS 2025, DOI 10.1109/TIFS.2025.3581743) converted to
+# markdown for reference. Kept locally, never committed: redistributing the full
+# text of a copyrighted article in a public repo is not ours to do. Cite the DOI.
+ProVFL_Property_Inference_Attacks_Against_Vertical_Federated_Learning.md
+
+# Superseded by kaggle_run.py, which builds the same commands with session
+# definitions, cost estimates and resume markers instead of a hand-edited list.
+kaggle_script_updated.py

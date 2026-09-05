@@ -242,6 +242,92 @@ def gradient_random_projection(tensor, proj_dim):
     return reconstructed
 
 
+# ============ Norm-distribution defenses (added after session s1) ============
+# Session s1 showed additive noise cannot defend this attack: in d dimensions
+# i.i.d. noise shifts every sample's norm by nearly the same amount, so the
+# SORTED per-sample norm vector -- the statistic pia_func actually consumes --
+# keeps its shape and ordering (norms_defense_adult shows victim_norm_obs ~=
+# victim_norm_raw). These three act on the norm distribution directly instead.
+#
+# Their role in the argument is not "the defense that finally works". s1's
+# channel decomposition showed the adversary reaches its full accuracy from
+# a_output/a_grad alone, which no defense can reach. norm_alignment provides the
+# CONSTRUCTIVE half of that bound: it provably removes all information from the
+# victim's norm channel, so measuring the attack against it shows the ceiling is
+# tight rather than merely un-beaten by the mechanisms tried so far.
+
+def norm_alignment(tensor, target_norm=-1.0, p=1, eps=1e-8):
+    """
+    Rescale every sample to the same L_p norm. The sorted per-sample norm vector
+    becomes (t, t, ..., t) regardless of batch composition, so it carries zero
+    information about the property fraction -- by construction, not empirically.
+
+    p MUST match the attack's --norm_type. Equalising L2 norms while the attack
+    reads L1 norms leaves a direction-dependent residual (sparser embeddings have
+    smaller L1 at fixed L2), which is a partial defense at best. That mismatch is
+    worth an ablation row, not an accident.
+
+    target_norm <= 0 uses the batch's own mean norm, so the victim needs no prior
+    knowledge of the embedding scale and the forward activations keep their
+    typical magnitude. The target is detached: it is a batch statistic, like
+    BatchNorm's, and should not contribute a cross-sample gradient term. The
+    per-sample norm is left differentiable, exactly as an L2-normalisation layer
+    would be.
+
+    :param tensor: (batch_size, hidden_dim)
+    :param target_norm: common norm to project onto; <=0 means the batch mean
+    :param p: norm order, must match args.norm_type
+    :return: rescaled tensor, same shape
+    """
+    norms = tensor.norm(p=p, dim=1, keepdim=True)
+    if target_norm is None or float(target_norm) <= 0:
+        target = norms.mean().detach()
+    else:
+        target = torch.tensor(float(target_norm), dtype=tensor.dtype,
+                              device=tensor.device)
+    return tensor * (target / norms.clamp_min(eps))
+
+
+def norm_quantization(tensor, num_levels, p=1, eps=1e-8):
+    """
+    Snap each sample's L_p norm to one of num_levels values evenly spaced across
+    the batch's observed norm range. Interpolates between undefended
+    (num_levels -> large) and norm_alignment (num_levels == 1), so the
+    privacy-utility curve can be traced with one knob instead of two mechanisms.
+
+    Coarsening the norms destroys the fine structure of the sorted-norm vector
+    that distinguishes a 40%-property batch from a 45% one, while leaving the
+    coarse magnitude the top model needs.
+
+    :param num_levels: number of quantisation bins, >= 1
+    """
+    k = max(int(num_levels), 1)
+    norms = tensor.norm(p=p, dim=1, keepdim=True)
+    if k == 1:
+        return norm_alignment(tensor, target_norm=-1.0, p=p, eps=eps)
+    lo, hi = norms.min().detach(), norms.max().detach()
+    step = ((hi - lo) / (k - 1)).clamp_min(eps)
+    quantised = lo + torch.round((norms.detach() - lo) / step) * step
+    return tensor * (quantised / norms.clamp_min(eps))
+
+
+def norm_permutation(tensor, p=1, eps=1e-8):
+    """
+    Reassign the batch's norms to different samples at random, keeping every
+    direction. Deliberately a NO-OP against this attack: the multiset of norms is
+    unchanged, and pia_func sorts them, so the attacker's feature vector is
+    bit-identical in distribution.
+
+    It is here as a placebo control. A defense that breaks the sample<->norm
+    pairing but not the norm distribution must score PrivacyGain ~= 0; if it ever
+    scores a win, the measurement pipeline is leaking something other than the
+    sorted-norm statistic and the whole channel analysis needs revisiting.
+    """
+    norms = tensor.norm(p=p, dim=1, keepdim=True)
+    perm = torch.randperm(tensor.shape[0], device=tensor.device)
+    return tensor * (norms[perm].detach() / norms.clamp_min(eps))
+
+
 # ============ Norm-triggered adaptive Gaussian noise (proposed defense) ============
 
 def batch_mean_norm(tensor, p=1):
@@ -330,10 +416,16 @@ STRUCTURAL_DEFENSES = ('None', 'shuffle', 'withdraw')
 # mechanisms applied by a trusted third party; they stay on the gradient side.
 GRAD_ONLY_DEFENSES = ('lap_noise', 'ppdl')
 
+# The norm-distribution family acts on the per-sample norm spectrum of a forward
+# embedding. Applying them to gradients would rescale the learning signal itself,
+# which is a different (and much more damaging) intervention than the one being
+# studied, so they are refused on the gradient side rather than silently allowed.
+NORM_FAMILY = ('norm_align', 'norm_quant', 'norm_permute')
+
 # --defense takes a free-form string in both scripts, so a typo used to fall through
 # every branch below and produce undefended numbers filed under a defense name. Fail
 # on the first batch instead of after 22 minutes of GPU time.
-KNOWN_DEFENSES = STRUCTURAL_DEFENSES + GRAD_ONLY_DEFENSES + (
+KNOWN_DEFENSES = STRUCTURAL_DEFENSES + GRAD_ONLY_DEFENSES + NORM_FAMILY + (
     'grad_clip', 'gauss_noise', 'dp_gauss', 'grad_sparse', 'random_proj')
 
 
@@ -384,6 +476,8 @@ def apply_perturbation(pair, args, side, epoch=0):
         return out, info
     if side == 'output' and defense in GRAD_ONLY_DEFENSES:
         return out, info
+    if side == 'grad' and defense in NORM_FAMILY:
+        return out, info
 
     idx = defend_indices(getattr(args, 'defend_scope', 'victim_only'))
     para = _strength(args, side)
@@ -418,5 +512,25 @@ def apply_perturbation(pair, args, side, epoch=0):
         for i in idx:
             dp_gc_ppdl(epsilon=1.8, sensitivity=1, layer_grad_list=[out[i]],
                        theta_u=para, gamma=0.001, tau=0.0001)
+    elif defense in NORM_FAMILY:
+        # p must be the order the attack reads, or the channel is only partly closed
+        p = int(getattr(args, 'norm_type', 1))
+        # This family is forward-side only, so --d_para (the gradient-side strength)
+        # is not a meaningful fallback and _strength's -1 -> d_para rule must not
+        # apply. For norm_align a negative value means "derive the target from the
+        # batch"; letting it collapse to d_para=0.05 would pin every embedding at
+        # norm 0.05 and wreck accuracy for a reason that has nothing to do with the
+        # norm spectrum -- an artefact that would look like a privacy/utility
+        # tradeoff and is not one.
+        para = float(getattr(args, 'out_para', -1.0))
+        for i in idx:
+            if defense == 'norm_align':
+                out[i] = norm_alignment(out[i], target_norm=para, p=p)
+            elif defense == 'norm_quant':
+                out[i] = norm_quantization(out[i], num_levels=para, p=p)
+            else:
+                out[i] = norm_permutation(out[i], p=p)
+            if i == 1:
+                info = {'sigma': para, 'norm': batch_mean_norm(out[i], p=p)}
 
     return out, info

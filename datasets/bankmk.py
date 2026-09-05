@@ -1,8 +1,11 @@
+import os
+
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
+from datasets import resolve_data_dir
 from my_utils.utils import tensor_data_create
 
 
@@ -157,7 +160,13 @@ def load_bankmk_data(one_hot=True, custom_balance=False, target_class=1, target_
     """Load the bankmk dataset."""
 
     prop_name, prop_value = prop
-    filename_train = "../data/bankmarketing/bank-full.csv"
+    # Was '../data/bankmarketing/bank-full.csv'. Two independent problems: the relative
+    # path only resolves from a subdirectory of the repo, and 'bankmarketing' here vs
+    # 'bankmk' in kaggle_setup.py's download table meant the fetch and the load could
+    # both "succeed" against different directories. Accept either name.
+    filename_train = os.path.join(
+        resolve_data_dir('bankmk', 'bankmarketing', sentinel='bank-full.csv'),
+        "bank-full.csv")
     names = [
         "age",
         "job",

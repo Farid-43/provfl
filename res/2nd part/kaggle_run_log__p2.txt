@@ -1,0 +1,11 @@
+job,script,dataset,property,returncode,minutes,finished
+s1_withdraw_02,vfl_pia_defense.py,adult,sex,0,10.1,2026-09-05 06:03:51
+s1_withdraw_05,vfl_pia_defense.py,adult,sex,0,8.9,2026-09-05 06:12:47
+s1_shuffle_02,vfl_pia_defense.py,adult,sex,0,10.7,2026-09-05 06:23:28
+s1_shuffle_05,vfl_pia_defense.py,adult,sex,0,10.8,2026-09-05 06:34:15
+s1a_none_probe,vfl_pia_active.py,adult,sex,0,13.2,2026-09-05 06:47:28
+s1a_gauss_out_005,vfl_pia_active.py,adult,sex,0,13.1,2026-09-05 07:00:31
+s1a_gauss_out_005_scopeboth,vfl_pia_active.py,adult,sex,0,13.4,2026-09-05 07:13:57
+s1a_gauss_out_020,vfl_pia_active.py,adult,sex,0,13.3,2026-09-05 07:27:13
+s1a_withdraw_05,vfl_pia_active.py,adult,sex,0,11.3,2026-09-05 07:38:33
+s1a_shuffle_05,vfl_pia_active.py,adult,sex,0,13.5,2026-09-05 07:52:02

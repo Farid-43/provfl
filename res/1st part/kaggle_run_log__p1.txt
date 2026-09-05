@@ -1,0 +1,11 @@
+job,script,dataset,property,returncode,minutes,finished
+s1_none_probe,vfl_pia_defense.py,adult,sex,0,11.7,2026-09-05 06:03:21
+s1_gauss_out_005,vfl_pia_defense.py,adult,sex,0,11.6,2026-09-05 06:14:55
+s1_gauss_grad_005,vfl_pia_defense.py,adult,sex,0,11.9,2026-09-05 06:26:50
+s1_gauss_both_005,vfl_pia_defense.py,adult,sex,0,11.9,2026-09-05 06:38:41
+s1_gauss_both_005_scopeboth,vfl_pia_defense.py,adult,sex,0,12.1,2026-09-05 06:50:50
+s1_gauss_out_010,vfl_pia_defense.py,adult,sex,0,11.7,2026-09-05 07:02:35
+s1_gauss_out_020,vfl_pia_defense.py,adult,sex,0,11.7,2026-09-05 07:14:14
+s1_gauss_out_050,vfl_pia_defense.py,adult,sex,0,11.7,2026-09-05 07:25:57
+s1_dp_gauss_10,vfl_pia_defense.py,adult,sex,0,12.4,2026-09-05 07:38:24
+s1_lap_noise_01,vfl_pia_defense.py,adult,sex,0,44.9,2026-09-05 08:23:15
