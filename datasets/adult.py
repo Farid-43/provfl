@@ -45,8 +45,31 @@ def download_data():
         print(filename2 + " already exist")
 
 
-TRAIN_DATA_FILE = '../data/adult/adult.data'
-TEST_DATA_FILE = '../data/adult/adult.test'
+# The paths below used to be hard-coded as '../data/adult/adult.data', which only
+# resolves when the process is launched from a subdirectory of the repo. On Kaggle the
+# repo is cloned to /kaggle/working/ProVFL and the scripts run from there, so '../data'
+# pointed outside the checkout and the bootstrap notebook had to sed this line. Resolve
+# it from the file's own location instead, so the same tree works locally and on Kaggle.
+def _find_data_dir():
+    """First of $PROVFL_DATA, <repo>/data/adult, <repo>/../data/adult, ./data/adult
+    that actually contains adult.data; else the repo-local path, for a clear error."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.dirname(here)
+    env = os.environ.get('PROVFL_DATA', '')
+    candidates = [os.path.join(repo, 'data', 'adult'),
+                  os.path.join(os.path.dirname(repo), 'data', 'adult'),
+                  os.path.join(os.getcwd(), 'data', 'adult')]
+    if env:
+        candidates = [env, os.path.join(env, 'adult')] + candidates
+    for d in candidates:
+        if os.path.isfile(os.path.join(d, 'adult.data')):
+            return d
+    return os.path.join(repo, 'data', 'adult')
+
+
+_DATA_DIR = _find_data_dir()
+TRAIN_DATA_FILE = os.path.join(_DATA_DIR, 'adult.data')
+TEST_DATA_FILE = os.path.join(_DATA_DIR, 'adult.test')
 
 data_types = OrderedDict([
     ("age", "int"),
@@ -124,7 +147,9 @@ def get_categorical_columns(data, cat_columns=None, fillna=True):
         cat_data = data[cat_columns]
 
     if fillna:
-        for colname, series in cat_data.iteritems():
+        # .iteritems() was removed in pandas 2.0; .items() is equivalent and works on
+        # 1.x too, so the bootstrap notebook no longer needs to sed this line.
+        for colname, series in cat_data.items():
             if 'Other' not in series.cat.categories:
                 series = series.cat.add_categories(['Other'])
 

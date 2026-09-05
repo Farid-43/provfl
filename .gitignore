@@ -160,3 +160,24 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+
+personal_run_output_on_1st_dataset/
+res_defense_adult.txt
+res_active_adult_part1.txt
+res_active_adult_part2.txt
+res_defense_adult.txt
+
+# Datasets fetched by kaggle_setup.py. UCI Adult is 4 MB of regenerable data and
+# census/health_heritage are larger; keep them out so a clone stays small and the
+# notebook always pulls a known-good copy.
+data/
+
+# Campaign artifacts, all produced by kaggle_run.py inside a Kaggle session and
+# downloaded afterwards. utils.write_to_csv appends, so committing these would
+# conflict on every run.
+runs_done/
+res_*.csv
+norms_*.csv
+kaggle_run_log.csv
+experiment_result_*/

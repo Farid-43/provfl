@@ -103,7 +103,7 @@ def main(args):
         wd_raio = 0.0
         if args.defense == 'withdraw' and args.d_para > 0.0:
             wd_raio = args.d_para
-        train_loader, valid_loader, prop_loader, aux_prop_index, aux_nonprop_index = get_data(args.dataset, prop_name=args.property, sampling_size=args.sampling_size, withdraw_ratio=wd_raio)
+        train_loader, valid_loader, prop_loader, aux_prop_index, aux_nonprop_index = get_data(args.dataset, prop_name=args.property, val_ratio=args.val_ratio, sampling_size=args.sampling_size, aligned=args.aligned, withdraw_ratio=wd_raio)
         local_models.append(model_sets.MLPBottomModel(config[args.dataset]["a_dim"], config[args.dataset]["hidden_dim"])) # a: attacker
         local_models.append(model_sets.MLPBottomModel(config[args.dataset]["b_dim"], config[args.dataset]["hidden_dim"]))
         args.learning_rate = config[args.dataset]["learning_rate"]
@@ -166,6 +166,7 @@ def main(args):
             model.train()
         
         train_loss = 0
+        epoch_raw_norm, epoch_obs_norm, epoch_sigma = [], [], []
         print(f'###################{epoch}')
         for batch_idx, (trn_X, trn_y, prop_label) in enumerate(train_loader):
 
@@ -190,28 +191,20 @@ def main(args):
             z_down_clone = torch.autograd.Variable(z_down_clone, requires_grad=True).to(args.device)
 
             # ===== Apply defense to OUTPUT embeddings BEFORE top model =====
-            # defend_scope controls which channels get output-side defense:
-            #   victim_only (default): index [1] only (b = victim channel).
-            #     a_output is the adversary's own computation — a real defender
-            #     cannot force an adversarial party to perturb its own data (§1).
-            #   both: index [0,1] — used as a comparison/ablation baseline.
-            # random_proj is skipped here — it changes dimensionality.
+            # Routed through defense_func.apply_perturbation so this script and
+            # vfl_pia_active.py cannot diverge. --defend_scope picks the party
+            # (victim_only keeps a_output untouched, since the adversary's own
+            # forward pass is not something a defender can reach), --defend_side
+            # picks the direction.
+            raw_victim_norm = defense_func.batch_mean_norm(z_down_clone, p=args.norm_type) \
+                if args.log_norms else None
             out_d_para = args.d_para if args.out_para < 0 else args.out_para
-            defend_idx = [0, 1] if args.defend_scope == 'both' else [1]
-            output_pair = [z_up_clone, z_down_clone]
-            if args.defense == 'grad_clip':
-                for i in defend_idx:
-                    output_pair[i] = defense_func.gradient_clipping(output_pair[i], max_norm=out_d_para)
-            if args.defense == 'gauss_noise':
-                for i in defend_idx:
-                    output_pair[i] = defense_func.add_gaussian_noise(output_pair[i], sigma=out_d_para)
-            if args.defense == 'dp_gauss':
-                for i in defend_idx:
-                    output_pair[i] = defense_func.dp_gaussian_mechanism(output_pair[i], max_norm=out_d_para, noise_multiplier=args.d_para2)
-            if args.defense == 'grad_sparse':
-                for i in defend_idx:
-                    output_pair[i] = defense_func.gradient_sparsification(output_pair[i], keep_ratio=out_d_para)
-            z_up_clone, z_down_clone = output_pair
+            (z_up_clone, z_down_clone), dinfo = defense_func.apply_perturbation(
+                [z_up_clone, z_down_clone], args, side='output', epoch=epoch)
+            if args.log_norms:
+                epoch_raw_norm.append(raw_victim_norm)
+                epoch_obs_norm.append(defense_func.batch_mean_norm(z_down_clone, p=args.norm_type))
+                epoch_sigma.append(dinfo.get('sigma', out_d_para if args.defense == 'gauss_noise' else 0.0))
 
             # active party backward
             logits = active_model(z_up_clone, z_down_clone)
@@ -228,44 +221,12 @@ def main(args):
             z_gradients_down_clone = z_gradients_down[0].detach().clone()
 
             # ===== Apply defense to GRADIENTS =====
-            model_all_layers_grads_list = [z_gradients_up_clone, z_gradients_down_clone]
-            if args.defense == 'lap_noise':
-                dp = defense_func.DPLaplacianNoiseApplyer(beta=args.d_para)
-                for tensor_id in range(len(model_all_layers_grads_list)):
-                    model_all_layers_grads_list[tensor_id] = dp.laplace_mech(model_all_layers_grads_list[tensor_id])
-
-            if args.defense == 'ppdl':
-                defense_func.dp_gc_ppdl(epsilon=1.8, sensitivity=1, layer_grad_list=[z_gradients_up_clone],
-                                            theta_u=args.d_para, gamma=0.001, tau=0.0001)
-                defense_func.dp_gc_ppdl(epsilon=1.8, sensitivity=1, layer_grad_list=[z_gradients_down_clone],
-                                            theta_u=args.d_para, gamma=0.001, tau=0.0001)
-
-            if args.defense == 'grad_clip':
-                for tensor_id in range(len(model_all_layers_grads_list)):
-                    model_all_layers_grads_list[tensor_id] = defense_func.gradient_clipping(
-                        model_all_layers_grads_list[tensor_id], max_norm=args.d_para)
-
-            if args.defense == 'gauss_noise':
-                for tensor_id in range(len(model_all_layers_grads_list)):
-                    model_all_layers_grads_list[tensor_id] = defense_func.add_gaussian_noise(
-                        model_all_layers_grads_list[tensor_id], sigma=args.d_para)
-
-            if args.defense == 'dp_gauss':
-                for tensor_id in range(len(model_all_layers_grads_list)):
-                    model_all_layers_grads_list[tensor_id] = defense_func.dp_gaussian_mechanism(
-                        model_all_layers_grads_list[tensor_id], max_norm=args.d_para, noise_multiplier=args.d_para2)
-
-            if args.defense == 'grad_sparse':
-                for tensor_id in range(len(model_all_layers_grads_list)):
-                    model_all_layers_grads_list[tensor_id] = defense_func.gradient_sparsification(
-                        model_all_layers_grads_list[tensor_id], keep_ratio=args.d_para)
-
-            if args.defense == 'random_proj':
-                for tensor_id in range(len(model_all_layers_grads_list)):
-                    model_all_layers_grads_list[tensor_id] = defense_func.gradient_random_projection(
-                        model_all_layers_grads_list[tensor_id], proj_dim=args.d_para)
-
-            z_gradients_up_clone, z_gradients_down_clone = model_all_layers_grads_list
+            # Now honours --defend_scope: under C1 the adversary computes these
+            # gradients itself, so perturbing a_grad is not a deployable defense.
+            # lap_noise (ProVFL's D1) and ppdl stay gradient-side by definition --
+            # D1 explicitly assumes a trusted third party injects the noise.
+            (z_gradients_up_clone, z_gradients_down_clone), _ = defense_func.apply_perturbation(
+                [z_gradients_up_clone, z_gradients_down_clone], args, side='grad', epoch=epoch)
 
             # Collect intermediate results for attack evaluation.
             # Use DEFENDED outputs (z_up_clone/z_down_clone after output defense)
@@ -314,6 +275,25 @@ def main(args):
 
         cur_step = (epoch + 1) * len(train_loader)
 
+        # per-epoch trigger-signal trace: what the adaptive defense sees, and what it did.
+        # raw_victim_norm is measured BEFORE noise, so this also works under
+        # --defense None -- which is exactly the run used to pick --norm_threshold.
+        if args.log_norms and epoch_raw_norm:
+            utils.write_to_csv({
+                'script': 'defense', 'dataset': args.dataset, 'property': args.property,
+                'defense': args.defense, 'defend_scope': args.defend_scope,
+                'defend_side': args.defend_side, 'adaptive_noise': args.adaptive_noise,
+                'curriculum': args.curriculum, 'warmup_epochs': args.warmup_epochs,
+                'norm_threshold': args.norm_threshold, 'sigma_low': args.sigma_low,
+                'sigma_high': args.sigma_high, 'd_para': args.d_para, 'out_para': args.out_para,
+                'seed': args.seed, 'epoch': epoch,
+                'victim_norm_raw': f'{np.mean(epoch_raw_norm):.6f}',
+                'victim_norm_obs': f'{np.mean(epoch_obs_norm):.6f}',
+                'victim_norm_raw_med': f'{np.median(epoch_raw_norm):.6f}',
+                'sigma_mean': f'{np.mean(epoch_sigma):.6f}',
+                'sigma_frac_high': f'{np.mean([s >= args.sigma_high for s in epoch_sigma]):.4f}',
+            }, 'norms_defense_%s.csv' % args.dataset)
+
         # update scheduler
         for scheduler in scheduler_list:
             scheduler.step()
@@ -359,7 +339,11 @@ def main(args):
         'a_output': output_a_npy
     }
 
-    file_name = 'res_%s_%s.csv' % (os.path.abspath(__file__).split('.')[0].split('_')[-1], args.dataset)
+    # write_to_csv appends headerless once the file exists, so a run that adds new
+    # argparse columns must not land in a file written by an older schema. --out_csv
+    # makes that explicit per campaign step.
+    file_name = args.out_csv if args.out_csv else 'res_%s_%s.csv' % (
+        os.path.abspath(__file__).split('.')[0].split('_')[-1], args.dataset)
     
     clf = 'XGB'
     args.attack_feat = 'b_grad'
@@ -416,9 +400,44 @@ if __name__ == '__main__':
                         help='Output-channel defense strength; defaults to --d_para if unset (<0)')
     parser.add_argument('--defend_scope', type=str, default='victim_only',
                         choices=['victim_only', 'both'],
-                        help='Which output channels to defend: victim_only (index 1 = b) or both (0+1)')
+                        help='Which party to defend: victim_only (index 1 = b) or both (0+1). '
+                             'both is undeployable under C1 -- ablation only.')
+    parser.add_argument('--defend_side', type=str, default='both',
+                        choices=['output', 'grad', 'both'],
+                        help='Which direction to defend: output (forward embeddings, the only '
+                             'channel the victim controls unilaterally), grad (needs a trusted '
+                             'third party under C1), or both')
+    # proposed defense: norm-triggered adaptive Gaussian noise
+    parser.add_argument('--adaptive_noise', type=int, default=0,
+                        help='0 = static sigma, 1 = V1 hard threshold, 2 = V2 continuous')
+    parser.add_argument('--norm_threshold', type=float, default=0.0,
+                        help='Trigger level for the batch mean L_p norm; read it off a '
+                             '--log_norms baseline run')
+    parser.add_argument('--sigma_low', type=float, default=0.005)
+    parser.add_argument('--sigma_high', type=float, default=0.05)
+    parser.add_argument('--sigma_alpha', type=float, default=0.05,
+                        help='V2 slope: sigma = sigma_low + alpha * norm / norm_threshold')
+    parser.add_argument('--curriculum', type=int, default=0,
+                        help='0 = off, 1 = ramp up over --warmup_epochs (V3), 2 = decay')
+    parser.add_argument('--warmup_epochs', type=int, default=10)
+    # bookkeeping -- these must match vfl_pia_active.py, which had silently drifted
+    # to val_ratio 0.2 vs 0.3 and 10 vs 5 seeds, making the two result files
+    # non-comparable
+    parser.add_argument('--val_ratio', type=float, default=0.3,
+                        help='Held-out fraction; must match vfl_pia_active.py to compare files')
+    parser.add_argument('--aligned', type=int, default=1,
+                        help='Use the aligned-sample split in the dataloader')
+    parser.add_argument('--n_seeds', type=int, default=5,
+                        help='Seeds 0..n_seeds-1; must match vfl_pia_active.py for paired tests')
+    parser.add_argument('--log_norms', type=int, default=0,
+                        help='Write the per-epoch victim-norm / sigma trace to '
+                             'norms_defense_<dataset>.csv')
+    parser.add_argument('--out_csv', type=str, default='',
+                        help='Explicit results file. write_to_csv appends headerless, so a run '
+                             'with new columns must not land in an older file.')
+
     args = parser.parse_args()
 
-    for seed in range(5):
+    for seed in range(args.n_seeds):
         args.seed = seed
         main(args)

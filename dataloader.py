@@ -1,5 +1,4 @@
 import torch
-from datasets.celeba import get_celeba_dataset
 from datasets.adult import get_adult_dataset
 from datasets.census import get_census_dataset
 from datasets.bankmk import get_bankmk_dataset
@@ -9,6 +8,18 @@ import numpy as np
 import random
 
 from torch.utils.data import Subset
+
+
+def get_celeba_dataset(*args, **kwargs):
+    """
+    Imported lazily. datasets.celeba pulls in torchvision's image stack and expects the
+    CelebA files on disk, so a top-level import made every tabular run -- adult
+    included -- fail when they were absent. That is why the Kaggle bootstrap used to
+    sed line 2 out; importing here keeps the celeba path working without holding the
+    other four datasets hostage to it.
+    """
+    from datasets.celeba import get_celeba_dataset as _impl
+    return _impl(*args, **kwargs)
 
 
 def get_data(dataset_name, prop_name, batch_size=64, val_ratio=0.2, sampling_size=2000, aligned=True, withdraw_ratio=0.0):
