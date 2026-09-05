@@ -516,10 +516,21 @@ SESSIONS = {'s1': session_s1, 's1b': session_s1b, 's1c': session_s1c,
             's4': session_s4}
 
 def marker_path(j, a):
-    """Markers are namespaced by dataset/property so s1 on adult and on census
-    do not skip each other's jobs."""
-    return os.path.join(MARKER_DIR, '%s__%s__%s.done'
-                        % (a.dataset, a.property, j['id']))
+    """Markers are namespaced by dataset/property so s1 on adult and on census do not
+    skip each other's jobs -- and by --smoke, which is not cosmetic. A smoke pass runs
+    the same job ids at 3 epochs / 1 seed; without its own namespace it wrote the marker
+    the real session then honoured, so the documented sequence
+
+        --session s1c --smoke        # 13 jobs, ~10 min
+        --session s1c                # 13 jobs, ~2.9 h
+
+    made the second command print SKIP thirteen times and exit in under a second. The
+    session looked finished, res_s1c_adult.csv was never created, and the only numbers
+    on disk were 1-seed/3-epoch smoke output.
+    """
+    return os.path.join(MARKER_DIR, '%s__%s__%s%s.done'
+                        % (a.dataset, a.property, 'smoke__' if a.smoke else '',
+                           j['id']))
 
 
 def build_cmd(j, a):
