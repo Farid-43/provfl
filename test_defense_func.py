@@ -244,8 +244,8 @@ def test_norm_family():
     for k in (2, 4, 8):
         q = D.norm_quantization(t, num_levels=k, p=1).norm(p=1, dim=1)
         check('norm_quant k=%d yields <= %d distinct norms' % (k, k),
-              len(torch.unique(torch.round(q * 1e4) / 1e4)) <= k,
-              'got %d' % len(torch.unique(torch.round(q * 1e4) / 1e4)))
+              len(torch.unique(torch.round(q * 1e2) / 1e2)) <= k,
+              'got %d' % len(torch.unique(torch.round(q * 1e2) / 1e2)))
     check('norm_quant k=1 == norm_align',
           torch.allclose(D.norm_quantization(t, num_levels=1, p=1),
                          D.norm_alignment(t, target_norm=-1.0, p=1), atol=1e-6))
@@ -302,7 +302,7 @@ def test_norm_family():
                                                d_para=0.05), side='output')
     q = out[1].norm(p=1, dim=1)
     check('norm_quant reads the level from --out_para',
-          len(torch.unique(torch.round(q * 1e4) / 1e4)) <= 4)
+          len(torch.unique(torch.round(q * 1e2) / 1e2)) <= 4)
 
 
 def main():

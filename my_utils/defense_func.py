@@ -306,14 +306,13 @@ def norm_quantization(tensor, num_levels, p=1, eps=1e-8):
     if k == 1:
         return norm_alignment(tensor, target_norm=-1.0, p=p, eps=eps)
     lo, hi = norms.min().detach(), norms.max().detach()
+    # Generate the exact k levels once so every sample in bin j gets the
+    # bit-identical target norm, avoiding fp accumulation from lo + i*step.
+    levels = torch.linspace(lo.item(), hi.item(), k, dtype=tensor.dtype,
+                            device=tensor.device)
     step = ((hi - lo) / (k - 1)).clamp_min(eps)
-    # Clamp the bin index to [0, k-1] explicitly before multiplying back, so
-    # floating-point rounding of (norms - lo) / step never produces a k-th bin.
-    # Without the clamp, fp drift can push a sample that sits exactly at `hi`
-    # into bin k instead of bin k-1, giving k+1 distinct quantised values and
-    # failing the <= k uniqueness assertion in test_defense_func.py.
-    bin_idx = torch.round((norms.detach() - lo) / step).clamp(0, k - 1)
-    quantised = lo + bin_idx * step
+    bin_idx = torch.round((norms.detach() - lo) / step).long().clamp(0, k - 1)
+    quantised = levels[bin_idx]
     return tensor * (quantised / norms.clamp_min(eps))
 
 
