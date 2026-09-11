@@ -310,11 +310,31 @@ def test_norm_family():
           len(torch.unique(torch.round(q * 1e2) / 1e2)) <= 4)
 
 
+def test_tensor_data_create():
+    import numpy as np
+    from my_utils.utils import tensor_data_create
+
+    # 1. Object array with mixed boolean and float types (the bankmk / census pandas 2.0 bug)
+    obj_feat = np.array([[True, 0.5, '1.2'], [False, 0.2, '0.0']], dtype=object)
+    obj_labels = np.array(['0', '1'], dtype=object)
+    ds = tensor_data_create(obj_feat, obj_labels)
+    x, y = ds[0]
+    check('tensor_data_create accepts numpy object_ arrays',
+          x.dtype == torch.float32 and y.dtype == torch.int64 and x.shape[0] == 3)
+
+    # 2. Standard float numpy array
+    f_feat = np.random.randn(10, 5).astype(np.float32)
+    f_labels = np.random.randint(0, 2, size=10)
+    ds2 = tensor_data_create(f_feat, f_labels)
+    check('tensor_data_create yields correct dataset size', len(ds2) == 10)
+
+
 def main():
     argparse.ArgumentParser(description=__doc__).parse_args()
     for fn in (test_routing, test_structural_noop, test_scope_isolation,
                test_side_gating, test_resolve_sigma, test_curriculum,
-               test_mechanisms, test_param_traps, test_norm_family):
+               test_mechanisms, test_param_traps, test_norm_family,
+               test_tensor_data_create):
         print('\n-- %s' % fn.__name__)
         fn()
     print('\n%d checks failed%s'

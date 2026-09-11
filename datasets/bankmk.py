@@ -228,18 +228,18 @@ def load_bankmk_data(one_hot=True, custom_balance=False, target_class=1, target_
         return df_tr
 
     else:
-        df_cat = pd.get_dummies(df[cat_cols])
+        df_cat = pd.get_dummies(df[cat_cols], dtype=float)
         # Normalizing continuous coloumns between 0 and 1
         df_cont = df[cont_cols] / (df[cont_cols].max())
         df_cont = df_cont.round(3)
 
         data = pd.concat([df_cat, df_cont, df["y"]], axis=1)
         prop_key = '%s_%s' % (prop_name, prop_value)
-        prop = data[prop_key]
+        prop = data[prop_key].astype(float)
 
         columns = list(data.columns)
-        columns.remove(prop_key)  
-        new_order = [prop_key] + columns  
+        columns.remove(prop_key)
+        new_order = [prop_key] + columns
         data = data[new_order]
 
         return data, prop
@@ -253,10 +253,10 @@ def get_bankmk_dataset(property): # [name, value]
 
     df, prop = load_bankmk_data(one_hot=True, prop=[property, prop_list[property]])
     df = df.reset_index(drop=True)
-    y_data = df['y'].to_numpy()
+    y_data = df['y'].to_numpy(dtype=np.int64)
     df = df.drop(['y'], axis=1)
-    x_data = df.to_numpy() # (45211, 51)
-    prop = prop.to_numpy()
+    x_data = df.to_numpy(dtype=np.float32) # (45211, 51)
+    prop = prop.to_numpy(dtype=np.float32)
     data = tensor_data_create(x_data, y_data)
 
     print("Percent of positive classes: {:.2%}".format(np.mean(y_data)))

@@ -14,8 +14,16 @@ import pandas as pd
 
 
 def tensor_data_create(features, labels):
-    tensor_x = torch.stack([torch.FloatTensor(i) for i in features])
-    tensor_y = torch.stack([torch.LongTensor([i]) for i in labels])[:,0]
+    if not torch.is_tensor(features):
+        features = np.asarray(features, dtype=np.float32)
+        tensor_x = torch.from_numpy(features)
+    else:
+        tensor_x = features.float()
+    if not torch.is_tensor(labels):
+        labels = np.asarray(labels, dtype=np.int64)
+        tensor_y = torch.from_numpy(labels)
+    else:
+        tensor_y = labels.long()
     dataset = torch.utils.data.TensorDataset(tensor_x, tensor_y)
     return dataset
 

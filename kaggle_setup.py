@@ -340,6 +340,17 @@ def check_package_resolution(dataset='adult'):
             os.path.basename(sentinel))
     exists = os.path.isfile(resolved)
     print('  %s -> %s%s' % (mod_name, resolved, '' if exists else '   <-- MISSING'))
+    if exists:
+        try:
+            from dataloader import get_data
+            default_prop = {'adult': 'race', 'bankmk': 'marital', 'census': 'sex'}.get(dataset, 'sex')
+            tl, vl, _, _, _ = get_data(dataset, prop_name=default_prop, batch_size=4, sampling_size=10)
+            sample_x, sample_y, sample_p = next(iter(tl))
+            print('  %s loader verified (batch x=%s, y=%s, p=%s)' % (
+                dataset, list(sample_x.shape), sample_y.dtype, type(sample_p)))
+        except Exception as exc:
+            print('  %s get_data test FAILED: %s' % (dataset, exc))
+            return False
     return ok and exists
 
 

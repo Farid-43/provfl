@@ -338,10 +338,10 @@ def load_census_data(
         uncleaned_df = pd.concat([uncleaned_df_train, uncleaned_df_test])
 
         dummy_tables = [
-            pd.get_dummies(uncleaned_df[column], prefix=column)
+            pd.get_dummies(uncleaned_df[column], prefix=column, dtype=float)
             for column in cat_columns
         ]
-        
+
         dummy_tables.append(uncleaned_df.drop(labels=cat_columns, axis=1))
         one_hot_df = pd.concat(dummy_tables, axis=1)
 
@@ -374,15 +374,15 @@ def get_census_dataset(property): # [name, value]
     columns.remove(prop_key)  # 从列名列表中移除prop_key列
     new_order = [prop_key] + columns  # 将'prop_key'列添加到新的列名列表的开头
     df = df[new_order]
-    p = df[prop_key].values
+    p = df[prop_key].to_numpy(dtype=np.float32)
 
     df = df.reset_index(drop=True)
-    y_data = df['labels'].to_numpy()
+    y_data = df['labels'].to_numpy(dtype=np.int64)
     df = df.drop(['labels'], axis=1)
-    x_data = df.to_numpy()
+    x_data = df.to_numpy(dtype=np.float32)
 
     length = len(x_data) # only include 10k records
-    indices = np.random.choice(length, 100000, replace=False)
+    indices = np.random.choice(length, min(100000, length), replace=False)
 
     x_data = x_data[indices]
     y_data = y_data[indices]
