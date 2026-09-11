@@ -363,8 +363,8 @@ def run_unit_test():
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--dataset', default='adult', choices=sorted(DATA_URLS),
-                   help='which dataset files to fetch')
+    p.add_argument('--dataset', default='adult', choices=sorted(DATA_URLS) + ['all'],
+                   help='which dataset files to fetch ("all" fetches adult, bankmk, and census)')
     p.add_argument('--skip_test', action='store_true',
                    help='do not run test_defense_func.py')
     p.add_argument('--insecure', action='store_true',
@@ -377,29 +377,39 @@ def main(argv=None):
     deps = check_imports()
     print('\n[2/5] accelerator')
     gpu = check_device()
-    print('\n[3/5] %s data' % a.dataset)
-    spec = DATA_URLS[a.dataset]
-    data = all([fetch(rel, urls, insecure=a.insecure) for rel, urls in spec])
-    if not data:
-        data = fetch_archive_fallback(a.dataset, [rel for rel, _ in spec],
-                                      insecure=a.insecure)
-    if not data and not a.insecure:
-        print('  if the errors above are all CERTIFICATE_VERIFY_FAILED, this host\'s CA '
-              'bundle is stale rather than UCI being down; retry with --insecure')
-    print('\n[4/5] package resolution')
-    pkg = check_package_resolution(a.dataset)
+
+    datasets_to_check = list(sorted(DATA_URLS.keys())) if a.dataset == 'all' else [a.dataset]
+    all_data_ok = True
+    all_pkg_ok = True
+
+    for ds in datasets_to_check:
+        print('\n[3/5] %s data' % ds)
+        spec = DATA_URLS[ds]
+        data = all([fetch(rel, urls, insecure=a.insecure) for rel, urls in spec])
+        if not data:
+            data = fetch_archive_fallback(ds, [rel for rel, _ in spec],
+                                          insecure=a.insecure)
+        if not data and not a.insecure:
+            print('  if the errors above are all CERTIFICATE_VERIFY_FAILED, this host\'s CA '
+                  'bundle is stale rather than UCI being down; retry with --insecure')
+        all_data_ok = all_data_ok and data
+
+        print('\n[4/5] package resolution for %s' % ds)
+        pkg = check_package_resolution(ds)
+        all_pkg_ok = all_pkg_ok and pkg
+
     print('\n[5/5] defense dispatcher')
     tests = True if a.skip_test else run_unit_test()
 
     print('\n' + '=' * 68)
-    for name, ok in [('dependencies', deps), ('gpu', gpu), ('data', data),
-                     ('imports', pkg), ('unit tests', tests)]:
+    for name, ok in [('dependencies', deps), ('gpu', gpu), ('data', all_data_ok),
+                     ('imports', all_pkg_ok), ('unit tests', tests)]:
         print('  %-14s %s' % (name, 'ok' if ok else 'FAILED'))
-    if all([deps, gpu, data, pkg, tests]):
+    if all([deps, gpu, all_data_ok, all_pkg_ok, tests]):
         print('\nready. Next, in order:')
-        print('  !python kaggle_run.py --session s1c --smoke')
-        print('  !python kaggle_run.py --session s1c            # ~2.9 h, 13 jobs')
-        print('  !python kaggle_setup.py --dataset census       # next session')
+        print('  !python kaggle_run.py --session s1c            # adult-sex confound + norm_align')
+        print('  !python kaggle_run.py --session s1g --dataset adult --property race')
+        print('  !python kaggle_run.py --session s1g --dataset bankmk --property marital')
         print('  !python kaggle_run.py --session s1g --dataset census --property sex')
         return 0
     print('\nfix the FAILED rows above before starting the campaign; running anyway '

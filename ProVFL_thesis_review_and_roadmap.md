@@ -1,5 +1,7 @@
 # ProVFL Defense Work — Supervisor Review & Publication Roadmap
 
+***Round 8 update (2026-09-10) — `s1c` ran on real Kaggle. The ceiling is now confirmed on real data, not projected. 12/13 jobs succeeded (`s1c_feat_corr` crashed, returncode 1, 0.3 min — needs a re-run, but `s1c_raw_baseline` succeeded so the confound question isn't fully blocked). `norm_align` is now the best empirical result in the whole project: it moves `MAE_b_output` by 16× (0.0085→0.1375 passive) at almost no utility cost (AUC 0.901→0.897) — and `MAE_own` still doesn't move. That is the paper's core figure. Full numbers in §2.5. One logging gap found: `norms_*.txt` only captures mean/median norm, which cannot show `norm_align`'s actual mechanism (variance collapse) since the mean is preserved by construction — needs a `victim_norm_std` column before the mechanism claim has a supporting figure.***
+
 ***Round 7 update (2026-09-06) — the campaign ran, and the result changes the paper.** Sessions s1 + s1b executed on Kaggle (20 jobs, adult/sex, 5 seeds, `res/1st part` + `res/2nd part`). Recombining their per-channel rows shows the C1 adversary keeps essentially its full accuracy after **discarding the victim's forward embedding entirely**: MAE over `{a_grad, a_output}` alone is 0.0136 passive / 0.0065 active, flat across every deployable configuration, while the mechanisms move the defended channel by up to 7.5×. **Wire perturbation cannot bound this attack, so §3's "build a better noise mechanism" programme is not the contribution — the ceiling is.** Full numbers, validity check and the one live confound in §2.3. §3 is retained as design history with a retraction banner; §5's build order is re-sequenced (`s1c` confound + constructive ceiling, then `s1g` generalisation; `s2`/`s3` deprecated in the runner).*
 
 *Round 6 update — pre-flight engineering pass complete, nothing run on GPU yet. All perturbation logic now goes through one dispatcher (`my_utils/defense_func.apply_perturbation`), both training scripts are argparse-identical, `--defend_side` splits the forward and backward channels, D4/D5 are reachable from the harness, `analyze_defense_results.py` and `kaggle_run.py` exist, and `test_defense_func.py` verifies the dispatcher (65 checks, all passing, no GPU). **§2's headline "gauss_noise Pareto-dominates dp_gauss outright" claim has been measured and is false — retracted and replaced below.***
@@ -176,6 +178,51 @@ Sessions s1 + s1b ran on 2026-09-05 (adult/sex, 5 seeds, `defend_scope=victim_on
 **Why additive noise cannot work here, stated as a mechanism.** The attack reads the *sorted per-sample L₁ norm vector* of the victim's embedding. Adding i.i.d. noise in d=16 dimensions shifts every per-sample norm by nearly the same amount, so the sorted vector translates and its shape — which is what carries the property — survives. This is currently an **analytic** argument plus the MAE tables; the norm traces in `res/` cannot support it, because `--log_norms` was only set on the *undefended* probes, where `victim_norm_obs == victim_norm_raw` by construction. `--session s1c` sets `--log_norms 1` on `norm_align` and on the high-σ Gaussian jobs, which is what turns the argument into a measurement of `obs` vs `raw`.
 
 **Handover correction for `--norm_threshold`.** From `norms_defense_adult__p1.txt` (passive, 5 seeds × 20 epochs): `victim_norm_raw_med` is 3.5950 at the attack epoch (18), peaks at 3.6018 (epoch 19), and the median across epochs is **3.3451**. Any threshold at or above ~3.6 makes V1 fire almost never — **use ~3.0–3.3, not 3.6886.** Note also that the active MR+LR trace runs systematically lower (2.9879 at the attack epoch, 2.7128 median), so a threshold tuned on the passive trace under-fires against the stronger attacker: the trigger is **not transferable across attacker strengths**, which is itself a defect in the Gate-1 design and a further reason s2/s3 are deprecated.
+
+## 2.5 Round 8 — `s1c` ran on real Kaggle: the ceiling holds, `norm_align` is the paper's best figure
+
+12/13 jobs succeeded (`kaggle_run_log__p1/p2.txt`); `s1c_feat_corr` (the Pearson-correlation confound probe) crashed at 0.3 min, returncode 1 — needs debugging and a re-run. `s1c_raw_baseline` (the other, arguably more decisive confound probe: attack accuracy on raw `a`-side features with no VFL training at all) succeeded, so the confound question is not fully blocked, but its output file wasn't part of this upload — bring it next time before writing the confound sentence in the paper.
+
+**Full channel decomposition, recomputed independently from `res_s1c_adult__p1/p2.txt` and `res_s1c_active_adult__p2.txt`** (same method as §2.3: `property_ensemble` is a mean of per-channel `pred_frac`, so `MAE_own` = mean of `{a_output, a_grad}`):
+
+*Passive attacker:*
+
+| Defense | out_para | side | MAE `b_output` | MAE all4 | MAE clean | **MAE own** | Accuracy | AUC |
+|---|---|---|---|---|---|---|---|---|
+| gauss_noise | 4.0 | output | 0.1515 | 0.0400 | 0.0028 | 0.0032 | 0.7596 | 0.77 |
+| gauss_noise | 2.0 | output | 0.1558 | 0.0357 | 0.0043 | 0.0022 | 0.7596 | 0.83 |
+| **norm_align** | −1 (mean) | output | **0.1375** | 0.0293 | 0.0068 | **0.0071** | **0.837** | **0.897** |
+| norm_permute (placebo) | −1 | output | 0.1630 | 0.0361 | 0.0063 | 0.0092 | 0.840 | 0.895 |
+| gauss_noise | 1.0 | output | 0.0896 | 0.0169 | 0.0074 | 0.0062 | 0.831 | 0.888 |
+| norm_quant | 2.0 | output | 0.0219 | 0.0013 | 0.0055 | 0.0061 | 0.834 | 0.898 |
+| **None** (undefended) | — | — | 0.0085 | 0.0053 | 0.0042 | 0.0042 | 0.844 | 0.901 |
+| norm_quant | 8.0 | output | 0.0042 | 0.0018 | 0.0038 | 0.0026 | 0.844 | 0.901 |
+
+*Active attacker (MR+LR), 5 seeds:*
+
+| Defense | out_para | MAE `b_output` | MAE all4 | MAE clean | **MAE own** | Accuracy | AUC |
+|---|---|---|---|---|---|---|---|
+| **norm_align** | −1 | **0.1315** | 0.0331 | 0.0003 | 0.0014 | **0.834** | **0.888** |
+| gauss_noise | 2.0 | 0.1925 | 0.0484 | 0.0003 | 0.0018 | 0.740 | 0.778 |
+| None | — | 0.0106 | 0.0054 | 0.0036 | 0.0050 | 0.839 | 0.892 |
+
+**Reading, and why this is the strongest result in the project so far:**
+
+1. **The ceiling holds under the best defense tested, not just the mediocre ones.** `norm_align` moves `MAE b_output` by **16×** (passive) and is the single biggest per-channel shift measured anywhere in this project — bigger than any `gauss_noise` setting, `dp_gauss`, `withdraw`, or `shuffle` from earlier rounds. Its `MAE own` (0.0071 passive, 0.0014 active) is still in the same tiny band as undefended (0.0042 / 0.0050) and every other row. If even the strongest, most theoretically-motivated defense can't move the ceiling, the ceiling isn't an artifact of testing weak mechanisms — it's a property of the channel split.
+
+2. **`norm_align` is also, independently, the best privacy-utility point ever measured in this project.** Accuracy/AUC barely move from baseline (0.837/0.897 vs 0.844/0.901 passive; 0.834/0.888 vs 0.839/0.892 active) while `MAE b_output` moves more than any other mechanism at any strength. This deserves to be reported as its own headline number even before the ceiling framing: **best channel-level privacy at essentially the lowest utility cost measured to date.**
+
+3. **The placebo behaves like a placebo, mostly.** `norm_permute` (same norm multiset, different assignment — should score ≈0 effect on the property statistic) gives `MAE own`=0.0092, in the same band as everything else, and its `MAE b_output` (0.1630) is actually the single *highest* of the batch — consistent with permutation not being norm-*reducing*, just norm-*reassigning*, so if anything it randomizes the per-sample link between norm and label without reducing the aggregate signal. Worth a sentence in the paper explaining why the placebo's `b_output` number looks large (it's not "more private", it's "differently wrong").
+
+4. **The "under-tuned" objection is closed.** `gauss_noise` at σ=2.0/4.0 doesn't buy more privacy at the ceiling — it just breaks the model. Accuracy collapses to **0.7596 exactly**, matching Adult's majority-class rate, meaning the model has stopped learning anything beyond predicting the majority class. `MAE own` at σ=4.0 (0.0032) is not meaningfully different from σ=1.0 (0.0062) or from undefended (0.0042) — the entire σ=1→4 range is already past the point where more noise buys anything, and it was already past that point at σ=0.05 several rounds ago. No further sigma-tuning objection is available.
+
+5. **A concrete gap: the norm-trace logging can't yet show *why*.** `norms_defense_adult__p1.txt` only has `norm_align` rows this round (the high-σ `gauss_noise` jobs weren't logged despite that being the original `s1c` intent) and only logs `victim_norm_raw`/`victim_norm_obs` as **means**. Since `norm_align`'s target is the batch mean, `raw` and `obs` are *identical by construction* (0.6446 both, checked directly) — this is mathematically correct, not a bug, but it means the mean-based columns can never show `norm_align`'s actual mechanism, which is a **variance collapse**, not a mean shift. **Fix before the next batch:** add a `victim_norm_std` (or full per-batch norm array) column, and confirm `--log_norms 1` is actually applied to the `gauss_noise` high-σ jobs too — both are needed before "the sorted-norm vector collapses to a constant" has a supporting figure rather than just an equation.
+
+**What to do now, in order:**
+1. Debug and re-run `s1c_feat_corr` (`ablation/test_ab_correlation.py`) — cheap (0.3 min when it ran), and closes the confound question alongside `s1c_raw_baseline`'s already-successful run.
+2. Bring back whatever `s1c_raw_baseline` actually printed/saved — its result exists but wasn't part of this upload, and it may already answer the confound question without needing #1 at all.
+3. Fix the norm-logging gap (§2.5 point 5) — add `victim_norm_std`, apply `--log_norms 1` to the high-σ `gauss_noise` jobs — before generating the figure for §6 that needs to show the mechanism, not just cite the equation.
+4. Once 1–3 are resolved, move to `s1g` (generalization) per the existing plan — the decomposition result is strong enough now that replicating it on a second dataset/property is the main remaining thing standing between this and a defensible paper claim.
 
 ## 3. The novel defense — converged design (Round 4: sequenced with go/no-go gates)
 

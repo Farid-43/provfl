@@ -417,14 +417,20 @@ def session_s1c(a):
         # (2) constructive ceiling: provably-zero norm leakage
         job('s1c_align_mean', DEFENSE, defense='norm_align', out_para=-1.0,
             log_norms=1, **vic),
-        job('s1c_quant_02', DEFENSE, defense='norm_quant', out_para=2.0, **vic),
-        job('s1c_quant_08', DEFENSE, defense='norm_quant', out_para=8.0, **vic),
+        job('s1c_quant_02', DEFENSE, defense='norm_quant', out_para=2.0,
+            log_norms=1, **vic),
+        job('s1c_quant_08', DEFENSE, defense='norm_quant', out_para=8.0,
+            log_norms=1, **vic),
         # the placebo: same norm multiset, so PrivacyGain must come out ~0.0000
-        job('s1c_permute', DEFENSE, defense='norm_permute', out_para=-1.0, **vic),
+        job('s1c_permute', DEFENSE, defense='norm_permute', out_para=-1.0,
+            log_norms=1, **vic),
         # the last of the additive-noise sweep
-        job('s1c_gauss_out_100', DEFENSE, defense='gauss_noise', out_para=1.0, **vic),
-        job('s1c_gauss_out_200', DEFENSE, defense='gauss_noise', out_para=2.0, **vic),
-        job('s1c_gauss_out_400', DEFENSE, defense='gauss_noise', out_para=4.0, **vic),
+        job('s1c_gauss_out_100', DEFENSE, defense='gauss_noise', out_para=1.0,
+            log_norms=1, **vic),
+        job('s1c_gauss_out_200', DEFENSE, defense='gauss_noise', out_para=2.0,
+            log_norms=1, **vic),
+        job('s1c_gauss_out_400', DEFENSE, defense='gauss_noise', out_para=4.0,
+            log_norms=1, **vic),
     ]
     aout = 'res_s1c_active_%s.csv' % d
     strong = dict(use_MR=1, use_LR=1, out_csv=aout)
@@ -433,7 +439,7 @@ def session_s1c(a):
         job('s1ca_align_mean', ACTIVE, defense='norm_align', out_para=-1.0,
             defend_side='output', defend_scope='victim_only', log_norms=1, **strong),
         job('s1ca_gauss_out_200', ACTIVE, defense='gauss_noise', out_para=2.0,
-            defend_side='output', defend_scope='victim_only', **strong),
+            defend_side='output', defend_scope='victim_only', log_norms=1, **strong),
     ]
     for j in jobs:
         j['flags'].setdefault('dataset', d)
@@ -474,11 +480,11 @@ def session_s1g(a):
     jobs = [
         job('s1g_%s_none' % tag, DEFENSE, defense='None', log_norms=1),
         job('s1g_%s_gauss_005' % tag, DEFENSE, defense='gauss_noise',
-            out_para=0.05, **vic),
+            out_para=0.05, log_norms=1, **vic),
         job('s1g_%s_gauss_050' % tag, DEFENSE, defense='gauss_noise',
-            out_para=0.50, **vic),
+            out_para=0.50, log_norms=1, **vic),
         job('s1g_%s_scopeboth' % tag, DEFENSE, defense='gauss_noise',
-            defend_side='both', d_para=0.05, out_para=0.05, defend_scope='both'),
+            defend_side='both', d_para=0.05, out_para=0.05, defend_scope='both', log_norms=1),
         job('s1g_%s_withdraw_05' % tag, DEFENSE, defense='withdraw', d_para=0.5),
         job('s1g_%s_shuffle_05' % tag, DEFENSE, defense='shuffle', d_para=0.5),
         job('s1g_%s_align' % tag, DEFENSE, defense='norm_align', out_para=-1.0,

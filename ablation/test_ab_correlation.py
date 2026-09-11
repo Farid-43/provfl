@@ -118,12 +118,22 @@ def main(args):
     num_columns = feat_a_npy.shape[1]
     a_feat_cc = []
     for i in range(num_columns):
-        column = feat_a_npy[:, i]  
-        cc, p_value = pearsonr(column, prop_npy)
+        column = feat_a_npy[:, i]
+        if np.std(column) == 0 or np.std(prop_npy) == 0:
+            cc = 0.0
+        else:
+            cc, p_value = pearsonr(column, prop_npy)
+            if np.isnan(cc):
+                cc = 0.0
         a_feat_cc.append(cc)
 
     a_feat_cc = np.array(a_feat_cc)
-    y_task_cc, _ = pearsonr(task_label_npy, prop_npy)
+    if np.std(task_label_npy) == 0 or np.std(prop_npy) == 0:
+        y_task_cc = 0.0
+    else:
+        y_task_cc, _ = pearsonr(task_label_npy, prop_npy)
+        if np.isnan(y_task_cc):
+            y_task_cc = 0.0
 
     row = {
         'dataset': args.dataset,
@@ -131,7 +141,7 @@ def main(args):
         'max_a_feat_cc': f'{np.max(a_feat_cc):.4f}',
         'ave_a_feat_cc': f'{np.mean(a_feat_cc):.4f}',
         'mid_a_feat_cc': f'{np.median(a_feat_cc):.4f}',
-        'y_task_cc':f'{y_task_cc:.4f}'
+        'y_task_cc': f'{y_task_cc:.4f}'
     }
     utils.write_to_csv(row, 'ab_feat_correlation.csv')
 
@@ -157,7 +167,7 @@ if __name__ == '__main__':
     parser.add_argument('--norm_type', type=int, default=1, help='use norm type to calculate feature distance')
     parser.add_argument('--save_feat', type=int, default=0, help='save intermediate outputs')
     parser.add_argument('--sampling_size', type=int, default=2000, help='num of overlapping samples')
-    parser.add_argument('--select_size', type=int, default=0, help='select correlated neurons') 
+    parser.add_argument('--select_size', type=int, default=0, help='select correlated neurons')
     parser.add_argument('--attack_epoch', type=int, default=18, help='epoch used in attack')
     parser.add_argument('--interpolate', type=int, default=200)
     parser.add_argument('--classifier', type=str, default='DT') # LR/simi
@@ -167,19 +177,5 @@ if __name__ == '__main__':
     parser.add_argument('--end_range', type=int, default=100)
     parser.add_argument('--target_num', type=int, default=100)
 
-    
     args = parser.parse_args()
-
-    query = {
-        'adult': ['sex', 'race', 'workclass'],
-        'census': ['sex', 'race', 'education'],
-        'bankmk': ['month', 'marital', 'contact'],
-        'health': ['sex', 'age'],
-        'lawschool': ['race', 'resident', 'gender']
-    }
-
-    for db, values in query.items():
-        for prop in values:
-            args.dataset = db
-            args.property = prop
-            main(args)
+    main(args)

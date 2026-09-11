@@ -349,6 +349,20 @@ def batch_mean_norm(tensor, p=1):
     return tensor.norm(p=p, dim=1).mean().item()
 
 
+def batch_std_norm(tensor, p=1):
+    """
+    Standard deviation of per-sample L_p norms in a batch.
+    Under norm_align this collapses to 0.0, capturing the variance collapse.
+
+    :param tensor: (batch_size, hidden_dim) embedding or gradient tensor
+    :param p: norm order, matching --norm_type (1 by default)
+    :return: python float
+    """
+    if tensor.shape[0] < 2:
+        return 0.0
+    return tensor.norm(p=p, dim=1).std().item()
+
+
 def curriculum_scale(epoch, warmup_epochs, mode=1):
     """
     Epoch-dependent multiplier on sigma.

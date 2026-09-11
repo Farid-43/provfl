@@ -184,7 +184,7 @@ experiment_result_*/
 # Scratch downloads from a Kaggle session. The one archived campaign under res/ is
 # force-added and stays tracked; anything dropped in here afterwards does not.
 res
-
+new_res
 # The base paper (IEEE TIFS 2025, DOI 10.1109/TIFS.2025.3581743) converted to
 # markdown for reference. Kept locally, never committed: redistributing the full
 # text of a copyrighted article in a public repo is not ours to do. Cite the DOI.

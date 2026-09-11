@@ -133,6 +133,11 @@ def test_resolve_sigma():
     t = pair()[1]
     n = D.batch_mean_norm(t, p=1)
     check('batch_mean_norm is the per-sample L1 mean', 10.0 < n < 16.0, 'norm=%.3f' % n)
+    std_n = D.batch_std_norm(t, p=1)
+    check('batch_std_norm is positive for random inputs', std_n > 0.0, 'std=%.3f' % std_n)
+    aligned_t = D.norm_alignment(t, target_norm=-1.0, p=1)
+    std_aligned = D.batch_std_norm(aligned_t, p=1)
+    check('batch_std_norm collapses to ~0 under norm_align', std_aligned < 1e-4, 'std=%.2e' % std_aligned)
 
     s, bn = D.resolve_sigma(t, mk(adaptive_noise=0), 0, 0.05)
     check('mode 0 is static and measures nothing', s == 0.05 and bn is None)

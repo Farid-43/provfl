@@ -166,7 +166,7 @@ def main(args):
             model.train()
         
         train_loss = 0
-        epoch_raw_norm, epoch_obs_norm, epoch_sigma = [], [], []
+        epoch_raw_norm, epoch_obs_norm, epoch_obs_norm_std, epoch_sigma = [], [], [], []
         print(f'###################{epoch}')
         for batch_idx, (trn_X, trn_y, prop_label) in enumerate(train_loader):
 
@@ -174,7 +174,7 @@ def main(args):
             trn_X_up, trn_X_down = utils.split_data(args.dataset, trn_X) # return data_a, data_b
             if args.defense == 'shuffle' and args.d_para > 0 and batch_idx < len(train_loader) * args.d_para:
                 random.shuffle(trn_X_down)
-            
+
             trn_X_up = trn_X_up.to(device)
             trn_X_down = trn_X_down.to(device)
             target = trn_y.float().to(device)
@@ -204,6 +204,7 @@ def main(args):
             if args.log_norms:
                 epoch_raw_norm.append(raw_victim_norm)
                 epoch_obs_norm.append(defense_func.batch_mean_norm(z_down_clone, p=args.norm_type))
+                epoch_obs_norm_std.append(defense_func.batch_std_norm(z_down_clone, p=args.norm_type))
                 epoch_sigma.append(dinfo.get('sigma', out_d_para if args.defense == 'gauss_noise' else 0.0))
 
             # active party backward
@@ -289,6 +290,7 @@ def main(args):
                 'seed': args.seed, 'epoch': epoch,
                 'victim_norm_raw': f'{np.mean(epoch_raw_norm):.6f}',
                 'victim_norm_obs': f'{np.mean(epoch_obs_norm):.6f}',
+                'victim_norm_std': f'{np.mean(epoch_obs_norm_std):.6f}',
                 'victim_norm_raw_med': f'{np.median(epoch_raw_norm):.6f}',
                 'sigma_mean': f'{np.mean(epoch_sigma):.6f}',
                 'sigma_frac_high': f'{np.mean([s >= args.sigma_high for s in epoch_sigma]):.4f}',
