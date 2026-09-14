@@ -1,5 +1,9 @@
 import os
 import sys
+
+# Ensure repository root is on sys.path regardless of execution directory
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import numpy as np
 import time
 
@@ -144,6 +148,8 @@ def main(args):
         'y_task_cc': f'{y_task_cc:.4f}'
     }
     utils.write_to_csv(row, 'ab_feat_correlation.csv')
+    print(f"\n[CORRELATION RESULT] {args.dataset} ({args.property}) -> max_a_feat_cc={row['max_a_feat_cc']}, ave_a_feat_cc={row['ave_a_feat_cc']}, mid_a_feat_cc={row['mid_a_feat_cc']}, y_task_cc={row['y_task_cc']}")
+    logging.info(f"Summary written to ab_feat_correlation.csv: {row}")
 
 
 
